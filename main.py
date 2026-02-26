@@ -30,7 +30,7 @@ LINK_NHOM = "https://t.me/xomnguhoc"
 TEMPLATES = [
     f"🤝 Ae chéo link uy tín tại đây, tương tác thực: [Tham gia ngay]({LINK_NHOM})",
     f"🔥 Nhóm chéo link chất nhất, Admin duyệt 24/7: [Vào đây nha]({LINK_NHOM}) 🚀",
-    f"✅ Group chéo 10k thành viên, uy tín là vàng: [Bấm vào đây]({LINK_NHOM}) ✨"
+    f"✅ Group chéo 1k thành viên, uy tín là vàng: [Bấm vào đây]({LINK_NHOM}) ✨"
 ]
 
 # Kịch bản khi bị gọi là "bot" - Vừa cãi vừa chốt khách
