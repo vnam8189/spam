@@ -37,7 +37,7 @@ AI_SCRIPTS = [
 
 TEMPLATES = [
     f"🤝 Chéo link uy tín, tương tác thực tại đây: [Tham gia ngay]({LINK_NHOM})",
-    f"🔥 Group chéo link chất nhất 2024, không lo scam: [Vào đây]({LINK_NHOM}) 🚀",
+    f"🔥 Group chéo link chất nhất 2026, không lo scam: [Vào đây]({LINK_NHOM}) 🚀",
     f"✅ Uy tín là vàng - Chéo nhanh gọn: [Bấm tại đây]({LINK_NHOM}) ✨"
 ]
 
