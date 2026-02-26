@@ -35,7 +35,7 @@ TEMPLATES = [
 EMOJI_POOL = ["👍", "🔥", "🤩", "🚀", "🤝", "✅", "💎"]
 
 AI_REPLIES = {
-    "bot": ["Người thật 100% nha, bot đâu mà bot!", "Đang ngồi trực chéo mỏi tay đây ae 😂", "Hỗ trợ viên nhiệt tình nhất hệ mặt trời đây."],
+    "scam": ["Người thật 100% nha, bot đâu mà bot!", "Đang ngồi trực chéo mỏi tay đây ae 😂", "Hỗ trợ viên nhiệt tình nhất hệ mặt trời đây."],
     "uy tín": ["Nhóm này tui chéo suốt, cực kỳ uy tín.", "Admin làm việc kỹ lắm, yên tâm vào chéo.", "Cứ link đó mà vả, không lo scam."],
     "link": ["Link mình ghim ở trên đó!", "Tham gia ngay group xanh xanh bên trên kìa ae."],
     "ban": ["Hic đừng ban tui, tui chỉ share group tốt cho ae thôi mà.", "Tui đi ngay đây, đừng gắt thế Admin ơi!"]
