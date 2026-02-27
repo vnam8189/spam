@@ -1,4 +1,2 @@
 telethon
-Flask
-cryptg
-asyncio
+python-telegram-bot
