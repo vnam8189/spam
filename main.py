@@ -12,7 +12,6 @@ SESSION_DIR = 'sessions'
 BOT_TOKEN = '8499499024:AAFSifEjBAKL2BSmanDDlXuRGh93zvZjM78' 
 ADMIN_ID = 7816353760  
 
-# --- KHỞI TẠO THƯ MỤC SESSION ---
 if not os.path.exists(SESSION_DIR):
     os.makedirs(SESSION_DIR)
 
@@ -23,29 +22,31 @@ groups_to_spam = []
 is_spamming = False
 active_clients = {} 
 stats = {"sent": 0, "replied": 0}
-SPAM_INTERVAL = 300 # 5 phút (giây)
+SPAM_INTERVAL = 300 # 5 phút
 
 # --- LOGGING ---
 logging.basicConfig(level=logging.INFO)
 
 # --- QUẢN LÝ TÀI KHOẢN ---
 async def load_sessions():
-    """Khởi động tất cả các session có trong thư mục sessions/"""
+    """Khởi động tất cả các session đã có"""
     for filename in os.listdir(SESSION_DIR):
         if filename.endswith(".session"):
-            session_name = os.path.join(SESSION_DIR, filename[:-8])
-            client = TelegramClient(session_name, API_ID, API_HASH)
-            await client.start()
-            active_clients[filename] = client
-            logging.info(f"✅ Đã tải: {filename}")
-            
-            # Đăng ký tự động trả lời cho từng client
-            @client.on(events.NewMessage(chats=groups_to_spam))
-            async def handler(event):
-                if trigger_keyword.lower() in event.raw_text.lower():
-                    await event.reply(spam_content)
-                    stats["replied"] += 1
-                    logging.info(f"⚡ Rep tự động: {event.chat_id}")
+            session_path = os.path.join(SESSION_DIR, filename[:-8])
+            client = TelegramClient(session_path, API_ID, API_HASH)
+            await client.connect()
+            if await client.is_user_authorized():
+                active_clients[filename] = client
+                logging.info(f"✅ Đã tải: {filename}")
+                
+                # Tự trả lời
+                @client.on(events.NewMessage(chats=groups_to_spam))
+                async def handler(event):
+                    if trigger_keyword.lower() in event.raw_text.lower():
+                        await event.reply(spam_content)
+                        stats["replied"] += 1
+            else:
+                logging.error(f"❌ {filename} chưa auth")
 
 # --- THREAD CHẠY SPAM ---
 async def spam_task():
@@ -57,35 +58,29 @@ async def spam_task():
                 try:
                     await client.send_message(group, spam_content)
                     stats["sent"] += 1
-                    logging.info(f"📤 [{session_file}] Gửi tới {group}")
-                    # Delay nhỏ giữa các nhóm để tránh spam quá nhanh
                     await asyncio.sleep(2) 
                 except Exception as e:
-                    logging.error(f"❌ [{session_file}] Lỗi: {e}")
-                    await asyncio.sleep(5)
+                    logging.error(f"❌ {session_file} lỗi: {e}")
         
-        # Đợi 5 phút trước khi spam lại lượt mới
         if is_spamming:
             await asyncio.sleep(SPAM_INTERVAL)
 
-# --- BOT ĐIỀU KHIỂN (UI) ---
+# --- BOT ĐIỀU KHIỂN ---
 def get_main_keyboard():
     keyboard = [
         [InlineKeyboardButton("🚀 Chạy Spam", callback_data='start'),
          InlineKeyboardButton("🛑 Dừng Spam", callback_data='stop')],
         [InlineKeyboardButton("📊 Thống kê", callback_data='stats')],
-        [InlineKeyboardButton("📝 Nội dung", callback_data='edit_content')],
-        [InlineKeyboardButton("👥 Nhóm", callback_data='edit_groups')],
-        [InlineKeyboardButton("➕ Nạp Acc (Terminal)", callback_data='add_acc')]
+        [InlineKeyboardButton("➕ Nạp Acc Mới", callback_data='add_acc')]
     ]
     return InlineKeyboardMarkup(keyboard)
 
 async def start_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
-    await update.message.reply_text("🤖 **BẢNG ĐIỀU KHIỂN USERBOT** 🤖", reply_markup=get_main_keyboard(), parse_mode='Markdown')
+    await update.message.reply_text("🤖 **BẢNG ĐIỀU KHIỂN** 🤖", reply_markup=get_main_keyboard(), parse_mode='Markdown')
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global is_spamming, spam_content, groups_to_spam
+    global is_spamming
     query = update.callback_query
     await query.answer()
 
@@ -93,72 +88,65 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not is_spamming:
             is_spamming = True
             asyncio.create_task(spam_task())
-            await query.edit_message_text("✅ Đã bắt đầu spam! (5 phút/lần)", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Quay lại", callback_data='back')]]))
+            await query.edit_message_text("✅ Đã bắt đầu spam!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Quay lại", callback_data='back')]]))
         else:
-            await query.edit_message_text("⚠️ Đang chạy rồi!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Quay lại", callback_data='back')]]))
+            await query.edit_message_text("⚠️ Đang chạy!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Quay lại", callback_data='back')]]))
 
     elif query.data == 'stop':
         is_spamming = False
-        await query.edit_message_text("🛑 Đã dừng spam.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Quay lại", callback_data='back')]]))
+        await query.edit_message_text("🛑 Đã dừng.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Quay lại", callback_data='back')]]))
 
     elif query.data == 'stats':
-        status = "🟢 Đang chạy" if is_spamming else "🔴 Đã dừng"
-        stats_text = (
-            f"📊 **THỐNG KÊ CHI TIẾT**\n\n"
-            f"Trạng thái: {status}\n"
-            f"Số acc: {len(active_clients)}\n"
-            f"Tổng tin đã gửi: {stats['sent']}\n"
-            f"Tổng tự rep: {stats['replied']}\n"
-            f"Số nhóm: {len(groups_to_spam)}"
-        )
-        await query.edit_message_text(stats_text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Quay lại", callback_data='back')]]))
+        text = f"📊 **TK**\nAcc: {len(active_clients)}\nSent: {stats['sent']}\nRep: {stats['replied']}"
+        await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Quay lại", callback_data='back')]]))
 
-    elif query.data == 'edit_content':
-        keyboard = [
-            [InlineKeyboardButton("👀 Xem", callback_data='view_content'),
-             InlineKeyboardButton("✍️ Sửa", callback_data='input_content')],
-            [InlineKeyboardButton("🔙 Quay lại", callback_data='back')]
-        ]
-        await query.edit_message_text("📝 **QUẢN LÝ NỘI DUNG**", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-
-    elif query.data == 'view_content':
-        await query.edit_message_text(f"📖 **Nội dung hiện tại:**\n\n{spam_content}", parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Quay lại", callback_data='edit_content')]]))
-
-    elif query.data == 'input_content':
-        context.user_data['action'] = 'set_content'
-        await query.edit_message_text("✍️ **Gửi tin nhắn mới để đặt làm nội dung spam/trả lời:**", parse_mode='Markdown')
-
-    elif query.data == 'edit_groups':
-        context.user_data['action'] = 'set_groups'
-        await query.edit_message_text("📝 **Gửi danh sách nhóm (mỗi nhóm 1 dòng, ví dụ @username):**", parse_mode='Markdown')
-    
     elif query.data == 'add_acc':
-        await query.edit_message_text("✅ **Đã nhận lệnh.**\n\nHãy kiểm tra Terminal (màn hình console đang chạy bot) để nhập số điện thoại và code Telegram.", parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Quay lại", callback_data='back')]]))
-        # Lưu ý: Việc thêm acc thực tế phải làm ở Terminal. Bot chỉ thông báo.
-
+        context.user_data['action'] = 'phone'
+        await query.edit_message_text("📱 **Gửi số điện thoại (vd: +84912345678):**", parse_mode='Markdown')
+    
     elif query.data == 'back':
-        await query.edit_message_text("🤖 **BẢNG ĐIỀU KHIỂN USERBOT** 🤖", reply_markup=get_main_keyboard(), parse_mode='Markdown')
+        await query.edit_message_text("🤖 **BẢNG ĐIỀU KHIỂN** 🤖", reply_markup=get_main_keyboard(), parse_mode='Markdown')
 
+# --- LOGIC NẠP ACC QUA BOT ---
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global spam_content, groups_to_spam
+    global active_clients
     if update.effective_user.id != ADMIN_ID: return
 
     action = context.user_data.get('action')
-    if action == 'set_content':
-        spam_content = update.message.text
-        await update.message.reply_text("✅ Đã cập nhật nội dung mới!", reply_markup=get_main_keyboard())
-        context.user_data['action'] = None
-    elif action == 'set_groups':
-        groups_to_spam = update.message.text.split('\n')
-        await update.message.reply_text(f"✅ Đã cập nhật {len(groups_to_spam)} nhóm!", reply_markup=get_main_keyboard())
-        context.user_data['action'] = None
 
-# --- KHỞI TẠO HỆ THỐNG ---
+    if action == 'phone':
+        phone = update.message.text
+        context.user_data['phone'] = phone
+        context.user_data['action'] = 'code'
+        
+        # Tạm thời tạo client để xin code
+        session_name = os.path.join(SESSION_DIR, phone)
+        client = TelegramClient(session_name, API_ID, API_HASH)
+        await client.connect()
+        context.user_data['client'] = client
+        
+        # Gửi yêu cầu code
+        sent_code = await client.send_code_request(phone)
+        context.user_data['phone_code_hash'] = sent_code.phone_code_hash
+        
+        await update.message.reply_text("🔑 **Đã gửi mã về Telegram, gửi mã cho tôi:**", parse_mode='Markdown')
+
+    elif action == 'code':
+        code = update.message.text
+        client = context.user_data['client']
+        phone = context.user_data['phone']
+        
+        try:
+            await client.sign_in(phone, code, phone_code_hash=context.user_data['phone_code_hash'])
+            await update.message.reply_text("✅ **Nạp acc thành công!** Hãy restart bot để áp dụng.", reply_markup=get_main_keyboard())
+            active_clients[phone] = client
+            context.user_data['action'] = None
+        except Exception as e:
+            await update.message.reply_text(f"❌ Lỗi: {e}")
+
+# --- KHỞI TẠO ---
 async def main():
-    # 1. Tải tất cả acc từ thư mục sessions/
     await load_sessions()
-
-    # 2. Khởi động Bot điều khiển
     application = ApplicationBuilder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start_bot))
     application.add_handler(CallbackQueryHandler(button_handler))
@@ -167,7 +155,6 @@ async def main():
     await application.initialize()
     await application.start()
     await application.updater.start_polling()
-    
     await asyncio.Event().wait()
 
 if __name__ == '__main__':
