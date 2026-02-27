@@ -1,3 +1,4 @@
 telethon
-flask
-python-dotenv
+Flask
+cryptg
+asyncio
