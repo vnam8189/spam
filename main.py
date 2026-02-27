@@ -1,229 +1,203 @@
-import os, asyncio, random, string, json, sys, logging
+import os, asyncio, random, json, sys, logging, re
 from datetime import datetime
-from flask import Flask
+from flask import Flask, render_template_string
 from threading import Thread
 from telethon import TelegramClient, events, errors, Button
-from telethon.tl.functions.messages import SetTypingRequest, SendReactionRequest, ReadHistoryRequest, GetHistoryRequest
+from telethon.tl.functions.messages import SetTypingRequest, SendReactionRequest, ReadHistoryRequest
 from telethon.tl.functions.account import UpdateProfileRequest, UpdateStatusRequest
-from telethon.tl.functions.channels import JoinChannelRequest, GetFullChannelRequest, GetParticipantRequest
-from telethon.tl.types import SendMessageTypingAction, ReactionEmoji, UserStatusOnline, ChannelParticipantBanned
+from telethon.tl.functions.channels import JoinChannelRequest
+from telethon.tl.types import ReactionEmoji, SendMessageTypingAction
 
-# --- CẤU HÌNH TỐI CAO ---
-API_ID = 36437338 
-API_HASH = '18d34c7efc396d277f3db62baa078efc'
-BOT_TOKEN = '8499499024:AAFSifEjBAKL2BSmanDDlXuRGh93zvZjM78'
-ADMIN_ID = 7816353760 
-LINK_NHOM = "https://t.me/xomnguhoc"
+# ==========================================
+# 🛰️ CORE SYSTEM ARCHITECTURE
+# ==========================================
 
-SESSION_DIR = 'sessions'
-ACC_DATA = "accounts_v30.json"
-LOG_FILE = "system.log"
+class Config:
+    API_ID = 36437338 
+    API_HASH = '18d34c7efc396d277f3db62baa078efc'
+    BOT_TOKEN = '8499499024:AAFSifEjBAKL2BSmanDDlXuRGh93zvZjM78'
+    ADMIN_ID = 7816353760 
+    LINK_NHOM = "https://t.me/xomnguhoc"
+    SESSION_DIR = 'sessions'
+    DB_FILE = "singularity_v33.json"
+    INTERVAL = 120 # Chu kỳ 2 phút
 
-# Tạo môi trường
-for d in [SESSION_DIR]: 
-    if not os.path.exists(d): os.makedirs(d)
+class Logger:
+    logs = []
+    @classmethod
+    def add(cls, msg, type="info"):
+        t = datetime.now().strftime("%H:%M:%S")
+        cls.logs.append({"time": t, "msg": msg, "type": type})
+        if len(cls.logs) > 20: cls.logs.pop(0)
 
-# --- DATABASE ENGINE ---
 class Database:
     @staticmethod
     def load():
-        if os.path.exists(ACC_DATA):
-            with open(ACC_DATA, 'r') as f: return json.load(f)
+        if os.path.exists(Config.DB_FILE):
+            with open(Config.DB_FILE, 'r') as f: return json.load(f)
         return {}
     @staticmethod
     def save(data):
-        with open(ACC_DATA, 'w') as f: json.dump(data, f, indent=4)
+        with open(Config.DB_FILE, 'w') as f: json.dump(data, f, indent=4)
 
-stats = {"ok": 0, "fail": 0, "banned": 0, "total_sent": 0}
-is_running = False
+# ==========================================
+# 🧠 AI ENGINE: HUMAN SIMULATION
+# ==========================================
 
-# --- KỊCH BẢN AI CHỐT KHÁCH (GEN Z STYLE) ---
-AI_DEFENSE = [
-    "Bot cái gì, tui đang ngồi trực chéo mỏi cả tay đây ông nội 😂 qua đây mà xem: {link}",
-    "Người thật chéo thật nha, nhóm này admin duyệt tay nên sạch lắm ae: {link}",
-    "Hic, tui hỗ trợ ae chéo link uy tín mà bảo tui bot là dỗi á! Vào thử đi: {link}",
-    "Vừa chéo xong bên này, lẹ lắm ae, đừng nghe mấy ông kia nói bot: {link}",
-    "Chỗ này bao uy tín, tui chơi mấy tháng nay rồi, ae vào mà vả: {link}"
-]
+class HumanBrain:
+    @staticmethod
+    def get_spintax(text):
+        def rep(m): return random.choice(m.group(1).split('|'))
+        return re.sub(r'\{(.*?)\}', rep, text)
 
-SPAM_TEMPLATES = [
-    "🏆 **HỘI AE CHÉO REF - TRẢ ĐỦ 100%**\n━━━━━━━━━━━━━━━━━━━━\n🔥 Duyệt link siêu tốc\n🔥 Không scam - Không kick\n👉 [THAM GIA NGAY]({link})",
-    "🚀 **CỘNG ĐỒNG CHÉO LINK BÁ ĐẠO 2026**\n━━━━━━━━━━━━━━━━━━━━\n✅ Tương tác thực từ ae\n✅ Admin hỗ trợ 24/7\n👉 [BẤM VÀO ĐÂY]({link})"
-]
+    @staticmethod
+    def apply_invisible_hash(text):
+        # Chèn ký tự tàng hình vào giữa các từ để phá vỡ nhận diện AI
+        chars = ['\u200b', '\u200c', '\u200d']
+        words = text.split(' ')
+        new_text = ""
+        for w in words:
+            new_text += w + random.choice(chars) + " "
+        return new_text.strip()
 
-# --- GIẢ LẬP THIẾT BỊ (ANTI-BAN) ---
-DEVICES = [
-    {"model": "iPhone 15 Pro Max", "ver": "17.4.1"},
-    {"model": "Samsung Galaxy S24 Ultra", "ver": "14.0"},
-    {"model": "Google Pixel 8 Pro", "ver": "14.0"},
-    {"model": "Xiaomi 14 Ultra", "ver": "13.0"}
-]
+# ==========================================
+# 🔱 OMNI CONTROL: DASHBOARD & MASTER
+# ==========================================
 
-# --- LOGIC NGƯỜI THẬT (THE GHOST) ---
-async def perform_human_behavior(client, target):
-    try:
-        # 1. Giả vờ cuộn tin nhắn để đọc nội dung cũ
-        offset_id = 0
-        for _ in range(random.randint(1, 3)):
-            history = await client(GetHistoryRequest(
-                peer=target, offset_id=offset_id, offset_date=None,
-                add_offset=0, limit=10, max_id=0, min_id=0, hash=0
-            ))
-            if not history.messages: break
-            offset_id = history.messages[-1].id
-            await asyncio.sleep(random.randint(2, 5))
+app = Flask('')
+state = {"success": 0, "fail": 0, "banned": 0, "is_running": False}
 
-        # 2. Thả tim ngẫu nhiên vào tin nhắn gần nhất
-        if random.random() < 0.6:
-            messages = await client.get_messages(target, limit=3)
-            if messages:
-                await client(SendReactionRequest(
-                    peer=target, msg_id=random.choice(messages).id,
-                    reaction=[ReactionEmoji(emoticon=random.choice(["🔥", "👍", "❤️"]))]
-                ))
-                await asyncio.sleep(random.randint(3, 6))
+@app.route('/')
+def ui():
+    return render_template_string("""
+    <!DOCTYPE html>
+    <style>
+        body { background: #000; color: #0f0; font-family: 'Consolas', monospace; padding: 20px; }
+        .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; }
+        .card { border: 1px solid #0f0; padding: 15px; box-shadow: 0 0 10px #0f0; text-align: center; }
+        .log { background: #111; border: 1px solid #333; height: 350px; margin-top: 20px; padding: 10px; overflow: hidden; }
+        .info { color: #00d4ff; } .warn { color: #ffae00; } .error { color: #ff0055; }
+        h1 { text-transform: uppercase; letter-spacing: 5px; text-shadow: 0 0 20px #0f0; }
+    </style>
+    <h1>🔱 Singularity Nexus V33.0</h1>
+    <div class="grid">
+        <div class="card">STATUS<br><span style="color:white">{{ '⚡ ACTIVE' if s.is_running else '💤 IDLE' }}</span></div>
+        <div class="card">SUCCESS<br><span style="font-size: 25px">{{ s.success }}</span></div>
+        <div class="card">BANNED<br><span style="font-size: 25px; color:red">{{ s.banned }}</span></div>
+        <div class="card">UPTIME<br><span id="clock">Connecting...</span></div>
+    </div>
+    <div class="log">
+        {% for l in logs %}<div class="{{l.type}}">>> [{{l.time}}] {{l.msg}}</div>{% endfor %}
+    </div>
+    """, s=state, logs=Logger.logs)
 
-        # 3. Giả lập gõ chữ (Vừa gõ vừa dừng)
-        async with client.action(target, 'typing'):
-            await asyncio.sleep(random.randint(15, 30))
-            msg = random.choice(SPAM_TEMPLATES).format(link=LINK_NHOM)
-            # Thêm ký tự ẩn để mỗi tin nhắn là duy nhất
-            msg += "".join(random.choices(['\u200b', '\u200c'], k=5))
-            await client.send_message(target, msg, link_preview=False)
-            return True
-    except Exception as e:
-        print(f"[-] Lỗi hành vi: {e}")
-        return False
+# ==========================================
+# ⚔️ BATTLEGROUND: SPAM ENGINE
+# ==========================================
 
-# --- HỆ THỐNG NẠP ACC (OTP LIVE) ---
-master_bot = TelegramClient('master_bot', API_ID, API_HASH)
+class SpamEngine:
+    @staticmethod
+    async def execute(phone, target):
+        client = TelegramClient(os.path.join(Config.SESSION_DIR, phone), Config.API_ID, Config.API_HASH)
+        try:
+            await client.connect()
+            if not await client.is_user_authorized():
+                db = Database.load(); db[phone]['status'] = 'dead'; Database.save(db)
+                state['banned'] += 1
+                Logger.add(f"Acc {phone} đã hi sinh!", "error")
+                return False
+
+            # --- GIAO THỨC BÓNG MA ---
+            await client(ReadHistoryRequest(peer=target, max_id=0)) # Giả vờ đọc tin
+            await asyncio.sleep(random.randint(5, 10))
+
+            async with client.action(target, 'typing'): # Hiện đang gõ phím
+                await asyncio.sleep(random.randint(15, 25))
+                
+                content = "{🔥 CHÉO REF NHANH|🚀 KÈO THƠM CHÉO REF|💎 HỘI CHÉO LINK UY TÍN}\n{✅ Trả link 100%|✅ Không scam|✅ Trả link ngay}\n👉 [THAM GIA]({link})"
+                msg = HumanBrain.get_spintax(content).format(link=Config.LINK_NHOM)
+                msg = HumanBrain.apply_invisible_hash(msg)
+
+                await client.send_message(target, msg, link_preview=False)
+                state['success'] += 1
+                Logger.add(f"Acc {phone[:6]} rải quân thành công tại {target}", "info")
+                return True
+        except Exception as e:
+            state['fail'] += 1
+            return False
+        finally:
+            await client.disconnect()
+
+# ==========================================
+# 📡 MASTER BOT HANDLER
+# ==========================================
+
+master = TelegramClient('master_bot', Config.API_ID, Config.API_HASH)
+
+@master.on(events.NewMessage(pattern='/start'))
+async def master_ui(event):
+    if event.sender_id != Config.ADMIN_ID: return
+    db = Database.load()
+    alive = len([p for p in db if db[p]['status'] == 'active'])
+    btns = [[Button.inline("🚀 PHÁT LỆNH", b"run"), Button.inline("🛑 DỪNG QUÂN", b"stop")]]
+    await event.reply(f"🔱 **SINGULARITY V33.0**\n💂 Quân số: `{alive}` acc sống\n📊 Trạng thái: **{'RUNNING' if state['is_running'] else 'IDLE'}**", buttons=btns)
+
+@master.on(events.CallbackQuery())
+async def cb(event):
+    if event.data == b"run": await event.edit("🎯 **Nhập list nhóm mục tiêu:**")
+    elif event.data == b"stop": state['is_running'] = False; await event.edit("🛑 Đã thu quân.")
 
 @master_bot.on(events.NewMessage(pattern='/add_acc'))
-async def add_acc_logic(event):
-    if event.sender_id != ADMIN_ID: return
+async def add_acc(event):
+    if event.sender_id != Config.ADMIN_ID: return
     async with event.client.conversation(event.chat_id) as conv:
-        await conv.send_message("📱 **NHẬP SỐ ĐIỆN THOẠI (VD: +84...):**")
+        await conv.send_message("📱 Số điện thoại:")
         phone = (await conv.get_response()).text.strip()
-        
-        device = random.choice(DEVICES)
-        client = TelegramClient(os.path.join(SESSION_DIR, phone), API_ID, API_HASH,
-                                device_model=device['model'], system_version=device['ver'])
+        client = TelegramClient(os.path.join(Config.SESSION_DIR, phone), Config.API_ID, Config.API_HASH)
         await client.connect()
-        
         try:
             await client.send_code_request(phone)
-            await conv.send_message("📩 **NHẬP MÃ OTP (5 CHỮ SỐ):**")
-            otp = (await conv.get_response()).text.strip()
-            await client.sign_in(phone, otp)
-        except errors.SessionPasswordNeededError:
-            await conv.send_message("🔐 **NHẬP MẬT KHẨU 2 LỚP (2FA):**")
-            pwd = (await conv.get_response()).text.strip()
-            await client.sign_in(password=pwd)
+            await conv.send_message("📩 OTP:")
+            await client.sign_in(phone, (await conv.get_response()).text.strip())
         except Exception as e:
-            await conv.send_message(f"❌ Lỗi: {e}")
-            return
-            
-        me = await client.get_me()
-        db = Database.load()
-        db[phone] = {"id": me.id, "name": me.first_name, "status": "alive", "device": device['model']}
-        Database.save(db)
-        await conv.send_message(f"✅ Đã nạp thành công: **{me.first_name}**")
-        await client.disconnect()
+            await conv.send_message(f"Lỗi: {e}"); return
+        
+        db = Database.load(); db[phone] = {"status": "active"}; Database.save(db)
+        await conv.send_message("✅ Đã kết nạp chiến binh mới!")
 
-# --- DASHBOARD ĐIỀU KHIỂN ---
-@master_bot.on(events.NewMessage(pattern='/start'))
-async def dashboard(event):
-    if event.sender_id != ADMIN_ID: return
-    db = Database.load()
-    alive = len([p for p in db if db[p]['status'] == 'alive'])
-    text = (
-        f"🔱 **APOCALYPSE V30.0 - DASHBOARD**\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"💂 Quân đoàn: `{alive}/{len(db)}` Acc hoạt động\n"
-        f"✅ Đã rải: `{stats['total_sent']}` | 💀 Chết: `{stats['banned']}`\n"
-        f"⚙️ Trạng thái: **{'⚡️ ĐANG XUẤT KÍCH' if is_running else '💤 ĐANG NGHỈ'}**\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"Hãy gửi danh sách `@nhom1, @nhom2` để tấn công!"
-    )
-    buttons = [[Button.inline("🚀 KÍCH HOẠT", b"run"), Button.inline("🛑 DỪNG QUÂN", b"stop")]]
-    await event.reply(text, buttons=buttons)
-
-@master_bot.on(events.CallbackQuery())
-async def cb_handler(event):
-    global is_running
-    if event.data == b"run": await event.edit("🎯 **Nhập danh sách cụm nhóm mục tiêu:**")
-    elif event.data == b"stop": is_running = False; await event.edit("🛑 **Hệ thống đang thu quân...**")
-
-@master_bot.on(events.NewMessage())
-async def handle_mission(event):
-    global is_running, stats
-    if event.sender_id != ADMIN_ID or not event.text.startswith('@'): return
-    
+@master.on(events.NewMessage())
+async def run_mission(event):
+    if event.sender_id != Config.ADMIN_ID or not event.text.startswith('@'): return
     targets = [t.strip() for t in event.text.split(',')]
-    is_running = True
-    await event.reply(f"⚔️ **CHIẾN DỊCH BẮT ĐẦU!**\nĐang triển khai quân đội đến {len(targets)} mặt trận...")
+    state['is_running'] = True
+    Logger.add("KÍCH HOẠT CHIẾN DỊCH TỔNG LỰC", "warn")
 
-    while is_running:
+    while state['is_running']:
         db = Database.load()
-        phones = [p for p in db if db[p]['status'] == 'alive']
-        if not phones: break
+        active_accs = [p for p in db if db[p]['status'] == 'active']
+        if not active_accs: break
 
         for target in targets:
-            if not is_running: break
+            if not state['is_running']: break
+            phone = random.choice(active_accs)
             
-            phone = random.choice(phones)
-            client = TelegramClient(os.path.join(SESSION_DIR, phone), API_ID, API_HASH)
-            try:
-                await client.connect()
-                if not await client.is_user_authorized():
-                    db[phone]['status'] = 'died'; Database.save(db); stats['banned'] += 1; continue
-                
-                # Tham gia nhóm (Nếu chưa vào)
-                try: await client(JoinChannelRequest(target))
-                except: pass
-                
-                # Thực thi chuỗi hành động "Ghost"
-                if await perform_human_behavior(client, target):
-                    stats['total_sent'] += 1
-                else: stats['fail'] += 1
-                
-            except Exception: stats['fail'] += 1
-            finally: await client.disconnect()
+            # Thực thi nhiệm vụ
+            await SpamEngine.execute(phone, target)
             
-            # GIÃN CÁCH TRÁNH QUÉT: Nghỉ 5-12 phút mỗi lần gửi
-            await asyncio.sleep(random.randint(300, 700))
-        
-        # Báo cáo kết quả vòng quét
-        await master_bot.send_message(ADMIN_ID, f"📊 **BÁO CÁO CHIẾN TRƯỜNG:**\n✅ Thành công: {stats['total_sent']}\n💀 Acc bị ban: {stats['banned']}")
-        await asyncio.sleep(random.randint(1200, 2400))
+            # Chu kỳ nghỉ 2 phút chuẩn xác
+            await asyncio.sleep(random.randint(Config.INTERVAL - 10, Config.INTERVAL + 10))
 
-# --- KHỞI CHẠY ---
-app = Flask('')
-@app.route('/')
-def h(): return "V30.0 ACTIVE"
+# ==========================================
+# 🚀 INITIALIZE
+# ==========================================
 
-async def system_init():
-    # Tự động khởi chạy AI Phản hồi cho tất cả acc đang sống
-    db = Database.load()
-    for phone in db:
-        if db[phone]['status'] == 'alive':
-            c = TelegramClient(os.path.join(SESSION_DIR, phone), API_ID, API_HASH)
-            @c.on(events.NewMessage(incoming=True))
-            async def ai_brain(event):
-                if event.is_private: return
-                if any(x in event.raw_text.lower() for x in ["bot", "scam", "lừa"]):
-                    async with event.client.action(event.chat_id, 'typing'):
-                        await asyncio.sleep(random.randint(5, 10))
-                        await event.reply(random.choice(AI_DEFENSE).format(link=LINK_NHOM))
-            try: await c.start()
-            except: pass
-
-    await master_bot.start(bot_token=BOT_TOKEN)
-    await master_bot.run_until_disconnected()
+async def boot():
+    if not os.path.exists(Config.SESSION_DIR): os.makedirs(Config.SESSION_DIR)
+    await master.start(bot_token=Config.BOT_TOKEN)
+    Logger.add("Hệ thống Singularity V33.0 đã trực tuyến", "info")
+    await master.run_until_disconnected()
 
 if __name__ == "__main__":
     Thread(target=lambda: app.run(host='0.0.0.0', port=10000), daemon=True).start()
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(system_init())
-            
+    asyncio.run(boot())
+    
