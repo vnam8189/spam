@@ -23,6 +23,7 @@ groups_to_spam = []
 is_spamming = False
 active_clients = {} 
 stats = {"sent": 0, "replied": 0}
+SPAM_INTERVAL = 300 # 5 phút (giây)
 
 # --- LOGGING ---
 logging.basicConfig(level=logging.INFO)
@@ -38,7 +39,7 @@ async def load_sessions():
             active_clients[filename] = client
             logging.info(f"✅ Đã tải: {filename}")
             
-            # Đăng ký tự động trả lời
+            # Đăng ký tự động trả lời cho từng client
             @client.on(events.NewMessage(chats=groups_to_spam))
             async def handler(event):
                 if trigger_keyword.lower() in event.raw_text.lower():
@@ -57,24 +58,31 @@ async def spam_task():
                     await client.send_message(group, spam_content)
                     stats["sent"] += 1
                     logging.info(f"📤 [{session_file}] Gửi tới {group}")
-                    await asyncio.sleep(60) # Chống ban
+                    # Delay nhỏ giữa các nhóm để tránh spam quá nhanh
+                    await asyncio.sleep(2) 
                 except Exception as e:
                     logging.error(f"❌ [{session_file}] Lỗi: {e}")
                     await asyncio.sleep(5)
+        
+        # Đợi 5 phút trước khi spam lại lượt mới
+        if is_spamming:
+            await asyncio.sleep(SPAM_INTERVAL)
 
 # --- BOT ĐIỀU KHIỂN (UI) ---
-async def start_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID: return
-    
+def get_main_keyboard():
     keyboard = [
         [InlineKeyboardButton("🚀 Chạy Spam", callback_data='start'),
          InlineKeyboardButton("🛑 Dừng Spam", callback_data='stop')],
         [InlineKeyboardButton("📊 Thống kê", callback_data='stats')],
-        [InlineKeyboardButton("📝 Quản lý Nội dung", callback_data='edit_content')],
-        [InlineKeyboardButton("👥 Quản lý Nhóm", callback_data='edit_groups')]
+        [InlineKeyboardButton("📝 Nội dung", callback_data='edit_content')],
+        [InlineKeyboardButton("👥 Nhóm", callback_data='edit_groups')],
+        [InlineKeyboardButton("➕ Nạp Acc (Terminal)", callback_data='add_acc')]
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("🤖 **BẢNG ĐIỀU KHIỂN USERBOT** 🤖", reply_markup=reply_markup, parse_mode='Markdown')
+    return InlineKeyboardMarkup(keyboard)
+
+async def start_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID: return
+    await update.message.reply_text("🤖 **BẢNG ĐIỀU KHIỂN USERBOT** 🤖", reply_markup=get_main_keyboard(), parse_mode='Markdown')
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global is_spamming, spam_content, groups_to_spam
@@ -85,7 +93,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not is_spamming:
             is_spamming = True
             asyncio.create_task(spam_task())
-            await query.edit_message_text("✅ Đã bắt đầu spam!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Quay lại", callback_data='back')]]))
+            await query.edit_message_text("✅ Đã bắt đầu spam! (5 phút/lần)", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Quay lại", callback_data='back')]]))
         else:
             await query.edit_message_text("⚠️ Đang chạy rồi!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Quay lại", callback_data='back')]]))
 
@@ -98,17 +106,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         stats_text = (
             f"📊 **THỐNG KÊ CHI TIẾT**\n\n"
             f"Trạng thái: {status}\n"
-            f"Số acc hoạt động: {len(active_clients)}\n"
+            f"Số acc: {len(active_clients)}\n"
             f"Tổng tin đã gửi: {stats['sent']}\n"
             f"Tổng tự rep: {stats['replied']}\n"
-            f"Số nhóm cần spam: {len(groups_to_spam)}"
+            f"Số nhóm: {len(groups_to_spam)}"
         )
         await query.edit_message_text(stats_text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Quay lại", callback_data='back')]]))
 
     elif query.data == 'edit_content':
         keyboard = [
-            [InlineKeyboardButton("👀 Xem Nội Dung", callback_data='view_content')],
-            [InlineKeyboardButton("✍️ Sửa Nội Dung", callback_data='input_content')],
+            [InlineKeyboardButton("👀 Xem", callback_data='view_content'),
+             InlineKeyboardButton("✍️ Sửa", callback_data='input_content')],
             [InlineKeyboardButton("🔙 Quay lại", callback_data='back')]
         ]
         await query.edit_message_text("📝 **QUẢN LÝ NỘI DUNG**", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
@@ -124,8 +132,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['action'] = 'set_groups'
         await query.edit_message_text("📝 **Gửi danh sách nhóm (mỗi nhóm 1 dòng, ví dụ @username):**", parse_mode='Markdown')
     
+    elif query.data == 'add_acc':
+        await query.edit_message_text("✅ **Đã nhận lệnh.**\n\nHãy kiểm tra Terminal (màn hình console đang chạy bot) để nhập số điện thoại và code Telegram.", parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Quay lại", callback_data='back')]]))
+        # Lưu ý: Việc thêm acc thực tế phải làm ở Terminal. Bot chỉ thông báo.
+
     elif query.data == 'back':
-        await start_bot(query, context)
+        await query.edit_message_text("🤖 **BẢNG ĐIỀU KHIỂN USERBOT** 🤖", reply_markup=get_main_keyboard(), parse_mode='Markdown')
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global spam_content, groups_to_spam
@@ -134,11 +146,11 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     action = context.user_data.get('action')
     if action == 'set_content':
         spam_content = update.message.text
-        await update.message.reply_text("✅ Đã cập nhật nội dung mới!")
+        await update.message.reply_text("✅ Đã cập nhật nội dung mới!", reply_markup=get_main_keyboard())
         context.user_data['action'] = None
     elif action == 'set_groups':
         groups_to_spam = update.message.text.split('\n')
-        await update.message.reply_text(f"✅ Đã cập nhật {len(groups_to_spam)} nhóm!")
+        await update.message.reply_text(f"✅ Đã cập nhật {len(groups_to_spam)} nhóm!", reply_markup=get_main_keyboard())
         context.user_data['action'] = None
 
 # --- KHỞI TẠO HỆ THỐNG ---
