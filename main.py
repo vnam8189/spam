@@ -16,10 +16,12 @@ ADMIN_ID = 7816353760
 
 SESSION_DIR = 'sessions'
 GROUP_FILE = 'groups.txt'
+
+# Tạo thư mục và file cấu hình nếu chưa có
 if not os.path.exists(SESSION_DIR): os.makedirs(SESSION_DIR)
 if not os.path.exists(GROUP_FILE): open(GROUP_FILE, 'w').close()
 
-# --- KHO NỘI DUNG ---
+# --- KHO NỘI DUNG SPAM ---
 MESSAGES_POOL = [
     "Nhóm chéo chất lượng ae vào chéo cùng nhé: {link}",
     "Kèo thơm cho ae cày cuốc, vào nhóm thảo luận: {link}",
@@ -30,19 +32,22 @@ LINK_NHOM = "t.me/your_group_link" # THAY LINK NHÓM CỦA BẠN VÀO ĐÂY
 ICONS = ["🔥", "🚀", "💎", "🧧", "🍀", "✨", "🎯", "⚡", "🌈", "💰"]
 is_spamming = False
 
-# --- WEB SERVER ---
+# --- WEB SERVER (KEEP ALIVE) ---
 app = Flask('')
 @app.route('/')
-def home(): return "🤖 Clone King V7.0 is Online!"
+def home(): return "🤖 Clone King V7.1 (Render Fixed) is Online!"
 def run_web(): app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 10000)))
 
+# --- KHỞI TẠO CLIENT ---
 master_bot = TelegramClient('master_bot', API_ID, API_HASH)
 
-# --- HÀM TẠO TEXT CHỐNG QUÉT ---
+# --- HÀM HỖ TRỢ ANTI-AI ---
 def get_advanced_text():
     base_msg = random.choice(MESSAGES_POOL).format(link=LINK_NHOM)
+    # Chèn ký tự ẩn (ZWSP) để lách filter spam của Telegram
     def obfuscate(text):
         return "".join([char + random.choice(['\u200b', '\u200c', '']) for char in text])
+    
     icon = random.choice(ICONS)
     return f"{icon} {obfuscate(base_msg)} {icon}"
 
@@ -60,7 +65,9 @@ async def start_auto_reply():
                 async def handler(event):
                     if not event.is_private:
                         msg_text = event.text.lower()
+                        # Kiểm tra từ khóa trong nhóm
                         if "bot" in msg_text or "link" in msg_text:
+                            # Nghỉ ngẫu nhiên để giống người thật
                             await asyncio.sleep(random.randint(2, 5))
                             await event.reply(f"Bạn đang tìm link à? Vào đây nhé: {LINK_NHOM}")
                 active_clients.append(client)
@@ -84,17 +91,17 @@ def remove_group(group):
         with open(GROUP_FILE, 'w') as f:
             f.write('\n'.join(groups) + '\n')
 
-# --- GIAO DIỆN ĐIỀU KHIỂN ---
+# --- GIAO DIỆN ĐIỀU KHIỂN (MASTER BOT) ---
 @master_bot.on(events.NewMessage(pattern='/start'))
 async def start(event):
     if event.sender_id != ADMIN_ID: return
     menu = (
-        "👑 **CLONE KING V7.0 - PRO MANAGEMENT**\n"
+        "👑 **CLONE KING V7.1 - RENDER FIXED**\n"
         "━━━━━━━━━━━━━━━━━━━━━━━\n"
         "📱 **ACC:** `/list`, `/add`, `/delacc [file.session]`\n"
         "👥 **NHÓM:** `/listgroup`, `/addgroup [link]`, `/delgroup [link]`\n"
-        "📢 **SPAM:** `/spam` (Tự dùng danh sách nhóm)\n"
-        "🤖 **AUTO:** `/autoreply` (Tự động rep khi thấy 'bot')\n"
+        "📢 **SPAM:** `/spam` (Tự động rải tin)\n"
+        "🤖 **AUTO:** `/autoreply` (Rep khi thấy 'bot')\n"
         "🛑 **DỪNG:** `/stop` | **JOIN:** `/join [link]`"
     )
     await event.reply(menu)
@@ -170,9 +177,11 @@ async def spam_cmd(event):
             except: pass
             finally: await client.disconnect()
             
-            await asyncio.sleep(random.randint(40, 60)) # Giãn cách
+            # Giãn cách giữa các nhóm
+            await asyncio.sleep(random.randint(40, 60))
 
-        await asyncio.sleep(random.randint(200, 300)) # Nghỉ vòng
+        # Nghỉ giữa các vòng
+        await asyncio.sleep(random.randint(200, 300))
 
 @master_bot.on(events.NewMessage(pattern='/stop'))
 async def stop_cmd(event):
@@ -180,7 +189,7 @@ async def stop_cmd(event):
     is_spamming = False
     await event.reply("🛑 Đã dừng rải tin.")
 
-# --- CÁC HÀM QUẢN LÝ ACC (GIỮ NGUYÊN) ---
+# --- QUẢN LÝ TÀI KHOẢN (SESSIONS) ---
 @master_bot.on(events.NewMessage(pattern='/list'))
 async def list_accs(event):
     if event.sender_id != ADMIN_ID: return
@@ -238,6 +247,7 @@ async def join_cmd(event):
         await event.reply("✅ **Xong lệnh Join!**")
     except: await event.reply("⚠️ Nhập: `/join [link/username]`")
 
+# --- MAIN ---
 async def main():
     await master_bot.start(bot_token=BOT_TOKEN)
     print("Bot đang chạy...")
@@ -245,6 +255,13 @@ async def main():
 
 if __name__ == "__main__":
     Thread(target=run_web, daemon=True).start()
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(main())
-                                                
+    
+    # --- ĐOẠN CODE FIX LỖI RUNTIME ERROR TRÊN RENDER ---
+    try:
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(main())
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(main())
+    
