@@ -5,7 +5,7 @@ from flask import Flask
 from threading import Thread
 from telethon import TelegramClient, events, errors
 from telethon.tl.functions.channels import JoinChannelRequest
-from telethon.errors import FloodWaitError
+from telethon.errors import FloodWaitError, SessionPasswordNeededError
 
 # --- CẤU HÌNH ---
 API_ID = 36437338 
@@ -24,17 +24,17 @@ ICONS = ["🔥", "🚀", "💎", "🧧", "🍀", "✨", "🎯", "⚡", "🌈", "
 KEYWORDS_REPLY = ["bot", "link", "chéo", "admin", "đâu"]
 is_spamming = False
 last_messages = {} # Lưu { (session_name, group_username): message_id }
+clones = {} # Lưu trữ client đang hoạt động
 
 # --- WEB SERVER ---
 app = Flask('')
 @app.route('/')
-def home(): return "🤖 Bot Clone V7.1 - Active"
+def home(): return "🤖 Bot Clone Safe-Mode V7.5 is Online!"
 def run_web(): app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 10000)))
 
-# --- QUẢN LÝ DANH SÁCH NHÓM ---
+# --- QUẢN LÝ FILE ---
 def load_groups():
     with open(GROUP_FILE, 'r') as f:
-        # Lọc bỏ dòng trống và khoảng trắng
         return [line.strip() for line in f.readlines() if line.strip()]
 
 def save_group(group):
@@ -42,98 +42,114 @@ def save_group(group):
     if group not in groups:
         with open(GROUP_FILE, 'a') as f: f.write(group + '\n')
 
-# --- LOGIC CHÍNH ---
+def remove_group(group):
+    groups = load_groups()
+    if group in groups:
+        groups.remove(group)
+        with open(GROUP_FILE, 'w') as f: f.write('\n'.join(groups) + '\n')
+
+# --- LOGIC PHỤ TRỢ ---
+def get_safe_text():
+    inv = "".join(random.choices(['\u200b', '\u200c', '\u200d'], k=random.randint(4, 10)))
+    icon = random.choice(ICONS)
+    return f"{icon} {AD_MESSAGE} {icon}\n{inv}"
+
+# --- MASTER BOT & CLONES ---
 master_bot = TelegramClient('master_bot', API_ID, API_HASH)
-clones = {} 
 
 async def start_reply_handler(client, session_name):
     @client.on(events.NewMessage(incoming=True))
     async def handler(event):
         if event.is_private or not is_spamming: return
-        
-        # Chỉ trả lời nếu tin nhắn đến từ một trong các nhóm trong groups.txt
-        current_groups = load_groups()
-        # Kiểm tra xem nhóm hiện tại có trong danh sách mục tiêu không
+        targets = load_groups()
+        # Chỉ reply trong những nhóm nằm trong groups.txt
         is_target = False
         if event.chat:
             username = getattr(event.chat, 'username', None)
-            if username and any(username in g for g in current_groups):
-                is_target = True
-
+            if username and any(username in g for g in targets): is_target = True
+        
         if is_target and any(word in (event.text or "").lower() for word in KEYWORDS_REPLY):
-            await asyncio.sleep(random.randint(3, 10))
-            try:
-                await event.reply(f"Chào bạn, {AD_MESSAGE}")
+            await asyncio.sleep(random.randint(3, 8))
+            try: await event.reply(f"🤖 {AD_MESSAGE}")
             except: pass
 
 async def run_spam_loop():
     global is_spamming, last_messages
     while is_spamming:
-        targets = load_groups() # Luôn load lại danh sách mới nhất
+        targets = load_groups()
         session_files = [f for f in os.listdir(SESSION_DIR) if f.endswith('.session')]
-        
-        if not targets:
-            print("⚠️ Danh sách nhóm trống. Đang chờ...")
-            await asyncio.sleep(30)
+        if not targets or not session_files:
+            await asyncio.sleep(20)
             continue
 
         for target in targets:
             if not is_spamming: break
-            
-            # Chọn ngẫu nhiên 1 clone để gửi
             s_name = random.choice(session_files)
+            
             if s_name not in clones:
-                client = TelegramClient(os.path.join(SESSION_DIR, s_name), API_ID, API_HASH)
+                c = TelegramClient(os.path.join(SESSION_DIR, s_name), API_ID, API_HASH)
                 try:
-                    await client.connect()
-                    if await client.is_user_authorized():
-                        await start_reply_handler(client, s_name)
-                        clones[s_name] = client
+                    await c.connect()
+                    if await c.is_user_authorized():
+                        await start_reply_handler(c, s_name)
+                        clones[s_name] = c
                     else: continue
                 except: continue
             
             client = clones[s_name]
             try:
-                # 1. Xóa tin cũ trong nhóm này của clone này
-                msg_key = (s_name, target)
-                if msg_key in last_messages:
-                    try:
-                        await client.delete_messages(target, [last_messages[msg_key]])
+                # Xóa tin cũ
+                m_key = (s_name, target)
+                if m_key in last_messages:
+                    try: await client.delete_messages(target, [last_messages[m_key]])
                     except: pass
                 
-                # 2. Gửi tin mới
-                invisible = "".join(random.choices(['\u200b', '\u200c'], k=5))
-                text = f"{random.choice(ICONS)} {AD_MESSAGE} {random.choice(ICONS)}\n{invisible}"
-                
-                sent_msg = await client.send_message(target, text)
-                last_messages[msg_key] = sent_msg.id
-                print(f"✅ Gửi thành công tới {target} bởi {s_name}")
-
-            except FloodWaitError as e:
-                await asyncio.sleep(e.seconds)
-            except Exception as e:
-                print(f"❌ Lỗi {target}: {e}")
+                # Gửi tin mới
+                sent = await client.send_message(target, get_safe_text())
+                last_messages[m_key] = sent.id
+                print(f"✅ {s_name} gửi tới {target}")
+            except FloodWaitError as e: await asyncio.sleep(e.seconds)
+            except Exception as e: print(f"❌ Lỗi {target}: {e}")
             
-            # Delay giữa các nhóm để tránh bị gậy spam (rất quan trọng)
-            await asyncio.sleep(random.randint(90, 150))
+            await asyncio.sleep(random.randint(90, 160)) # Delay an toàn
 
-        # Nghỉ sau khi đi hết một vòng danh sách nhóm
         await asyncio.sleep(random.randint(300, 600))
 
-# --- CÁC LỆNH ĐIỀU KHIỂN ---
-@master_bot.on(events.NewMessage(pattern='/spam'))
-async def spam_cmd(event):
-    global is_spamming
+# --- COMMANDS ---
+@master_bot.on(events.NewMessage(pattern='/start'))
+async def start(event):
     if event.sender_id != ADMIN_ID: return
-    is_spamming = True
-    asyncio.create_task(run_spam_loop())
-    await event.reply("🚀 **Đã bắt đầu spam vào danh sách nhóm trong file!**")
+    menu = (
+        "🛡️ **QUẢN LÝ CLONE V7.5** 🛡️\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "📱 **CLONE:** `/add` | `/list` | `/delacc` \n"
+        "👥 **NHÓM:** `/addgroup` | `/delgroup` | `/listgroup` \n"
+        "🚀 **CHẠY:** `/spam` | `/stop` | `/join` \n"
+        "⚙️ **CÀI ĐẶT:** `/setmsg` | `/status` \n"
+        "━━━━━━━━━━━━━━━━━━━━━━━"
+    )
+    await event.reply(menu)
 
-@master_bot.on(events.NewMessage(pattern='/stop'))
-async def stop_cmd(event):
-    global is_spamming
-    is_spamming = False
-    await event.reply("🛑 **Đã dừng hệ thống.**")
+@master_bot.on(events.NewMessage(pattern='/add'))
+async def add_account(event):
+    if event.sender_id != ADMIN_ID: return
+    async with master_bot.conversation(event.chat_id) as conv:
+        try:
+            await conv.send_message("📞 Nhập số (+84...):")
+            phone = (await conv.get_response()).text.strip()
+            client = TelegramClient(os.path.join(SESSION_DIR, f"{phone}.session"), API_ID, API_HASH)
+            await client.connect()
+            if not await client.is_user_authorized():
+                await client.send_code_request(phone)
+                await conv.send_message("📩 Nhập OTP:")
+                otp = (await conv.get_response()).text.strip()
+                try: await client.sign_in(phone, otp)
+                except SessionPasswordNeededError:
+                    await conv.send_message("🔒 Nhập 2FA:")
+                    await client.sign_in(password=(await conv.get_response()).text.strip())
+            await conv.send_message("✅ Đã thêm acc thành công!")
+            await client.disconnect()
+        except Exception as e: await conv.send_message(f"❌ Lỗi: {e}")
 
 @master_bot.on(events.NewMessage(pattern='/addgroup'))
 async def add_g(event):
@@ -141,10 +157,52 @@ async def add_g(event):
     try:
         group = event.text.split(' ', 1)[1].strip().replace('@', '')
         save_group(group)
-        await event.reply(f"✅ Đã thêm nhóm `{group}` vào danh sách spam.")
-    except: await event.reply("Nhập: `/addgroup username_nhóm`")
+        await event.reply(f"✅ Đã lưu nhóm `{group}`. Dùng `/join` để các clone vào nhóm.")
+    except: await event.reply("⚠️ Nhập: `/addgroup username` (không kèm @)")
 
-# Các lệnh /start, /status, /setmsg giữ nguyên như bản trước của bạn...
+@master_bot.on(events.NewMessage(pattern='/join'))
+async def join_all(event):
+    if event.sender_id != ADMIN_ID: return
+    targets = load_groups()
+    sessions = [f for f in os.listdir(SESSION_DIR) if f.endswith('.session')]
+    await event.reply(f"🔄 Đang cho {len(sessions)} clone gia nhập {len(targets)} nhóm...")
+    for s in sessions:
+        c = TelegramClient(os.path.join(SESSION_DIR, s), API_ID, API_HASH)
+        await c.connect()
+        for t in targets:
+            try: 
+                await c(JoinChannelRequest(t))
+                await asyncio.sleep(5)
+            except: pass
+        await c.disconnect()
+    await event.reply("✅ Đã hoàn tất lệnh Join!")
+
+@master_bot.on(events.NewMessage(pattern='/spam'))
+async def spam_cmd(event):
+    global is_spamming
+    if event.sender_id != ADMIN_ID: return
+    is_spamming = True
+    asyncio.create_task(run_spam_loop())
+    await event.reply("🚀 **Hệ thống bắt đầu Spam & Auto-Reply!**")
+
+@master_bot.on(events.NewMessage(pattern='/stop'))
+async def stop_cmd(event):
+    global is_spamming
+    is_spamming = False
+    await event.reply("🛑 Đã dừng.")
+
+@master_bot.on(events.NewMessage(pattern='/setmsg'))
+async def set_msg(event):
+    global AD_MESSAGE
+    if event.sender_id != ADMIN_ID: return
+    AD_MESSAGE = event.text.split('/setmsg ', 1)[1]
+    await event.reply("✅ Đã đổi tin nhắn quảng cáo.")
+
+@master_bot.on(events.NewMessage(pattern='/status'))
+async def status(event):
+    if event.sender_id != ADMIN_ID: return
+    sessions = [f for f in os.listdir(SESSION_DIR) if f.endswith('.session')]
+    await event.reply(f"📊 Trạng thái: {'Đang chạy 🟢' if is_spamming else 'Dừng 🔴'}\n📱 Clone: {len(sessions)}\n📁 Nhóm: {len(load_groups())}")
 
 async def main():
     await master_bot.start(bot_token=BOT_TOKEN)
@@ -152,6 +210,5 @@ async def main():
 
 if __name__ == "__main__":
     Thread(target=run_web, daemon=True).start()
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(main())
-    
+    asyncio.get_event_loop().run_until_complete(main())
+                    
