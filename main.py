@@ -1,203 +1,206 @@
-import os, re, requests, json, random, asyncio
-from datetime import datetime, timedelta
+import os, re, requests, json, random, time
+from datetime import datetime
 from threading import Thread
-from flask import Flask, request, jsonify
-# Sửa import để tương thích bản 13.15
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, ParseMode
-from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters
+from telegram import (InlineKeyboardButton, InlineKeyboardMarkup, Update, 
+                      ParseMode, ReplyKeyboardMarkup, KeyboardButton)
+from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters, CallbackContext
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
 # ==========================================
-# ⚙️ CẤU HÌNH HỆ THỐNG
+# ⚙️ HỆ THỐNG CẤU HÌNH BIẾN
 # ==========================================
 TOKEN = "8755060469:AAEfrc5Gj5Crr6RxP9gnxDrehbL_W7NsjIE"
 ADMIN_ID = 7816353760
-# LƯU Ý: Phải dùng cổng 6543 của Pooler để không bị lỗi mạng
 DB_URL = "postgresql://postgres.naghdswctyyvzfdnforu:96886693002613@aws-1-ap-southeast-2.pooler.supabase.com:6543/postgres"
-CHANNEL_ID = "@TRUMTXCL"
-SUPPORT_LINK = "https://t.me/nth_dev"
-MIN_DEPOSIT_RUT = 30000
 
-BANK_NAME = "MSB (Maritime Bank)"
-BANK_ACC = "96886693002613"
-BANK_USER = "NGUYEN THANH HOP"
+# Game Settings
+TAX = 0.05
+MIN_RUT = 50000
 
 # ==========================================
-# 🗄️ MODULE DATABASE
+# 🗄️ DATABASE QUẢN LÝ TẬP TRUNG
 # ==========================================
-class Database:
+class CoreDB:
     def __init__(self):
-        # Kết nối với SSL yêu cầu cho Supabase
         self.conn = psycopg2.connect(DB_URL, sslmode='require')
-        self.setup()
+        self.init_tables()
 
-    def setup(self):
+    def init_tables(self):
         with self.conn.cursor() as cur:
+            # Người dùng & Đại lý
             cur.execute('''CREATE TABLE IF NOT EXISTS users (
                 uid BIGINT PRIMARY KEY, username TEXT, balance DOUBLE PRECISION DEFAULT 0,
-                total_deposit DOUBLE PRECISION DEFAULT 0, total_bet DOUBLE PRECISION DEFAULT 0,
-                ref_by BIGINT DEFAULT 0, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-            cur.execute('''CREATE TABLE IF NOT EXISTS giftcodes (
-                code TEXT PRIMARY KEY, amount REAL, max_uses INTEGER, used_count INTEGER DEFAULT 0)''')
-            cur.execute('''CREATE TABLE IF NOT EXISTS gift_history (uid BIGINT, code TEXT, PRIMARY KEY(uid, code))''')
-            cur.execute('''CREATE TABLE IF NOT EXISTS trans_logs (id TEXT PRIMARY KEY, uid BIGINT, amount REAL)''')
-            cur.execute("CREATE TABLE IF NOT EXISTS system_config (key TEXT PRIMARY KEY, value REAL)")
-            cur.execute("INSERT INTO system_config VALUES ('win_rate', 50) ON CONFLICT DO NOTHING")
-            cur.execute("INSERT INTO system_config VALUES ('force_result', -1) ON CONFLICT DO NOTHING")
-            cur.execute('''CREATE TABLE IF NOT EXISTS checkins (uid BIGINT, date DATE, PRIMARY KEY(uid, date))''')
+                total_nap DOUBLE PRECISION DEFAULT 0, total_cuoc DOUBLE PRECISION DEFAULT 0,
+                ref_by BIGINT DEFAULT 0, status TEXT DEFAULT 'active')''')
+            # Lịch sử biến động số dư (Quan trọng để check log)
+            cur.execute('''CREATE TABLE IF NOT EXISTS balance_logs (
+                id SERIAL PRIMARY KEY, uid BIGINT, amount DOUBLE PRECISION, 
+                reason TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+            # Lịch sử Game
+            cur.execute('''CREATE TABLE IF NOT EXISTS game_results (
+                id SERIAL PRIMARY KEY, game_type TEXT, result TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+            # Cấu hình Admin
+            cur.execute("CREATE TABLE IF NOT EXISTS admin_config (key TEXT PRIMARY KEY, value TEXT)")
+            cur.execute("INSERT INTO admin_config VALUES ('win_rate', '50'), ('maintenance', 'off') ON CONFLICT DO NOTHING")
             self.conn.commit()
 
-    def get_user(self, uid):
+    def exec(self, sql, params=None, fetch=False):
         with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT * FROM users WHERE uid = %s", (uid,))
-            return cur.fetchone()
+            cur.execute(sql, params)
+            if fetch: return cur.fetchall()
+            self.conn.commit()
 
-db = Database()
-
-# ==========================================
-# 💰 MODULE AUTO BANK SEPAY (MSB)
-# ==========================================
-app_flask = Flask(__name__)
-
-def send_tele_msg(chat_id, text):
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    requests.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"})
-
-@app_flask.route('/webhook/sepay', methods=['POST'])
-def sepay_webhook():
-    data = request.json
-    content = data.get('transactionContent', '').upper()
-    amount = float(data.get('transferAmount', 0))
-    trans_id = str(data.get('id'))
-    match = re.search(r'\d{6,15}', content)
-    if match:
-        uid = int(match.group())
-        with db.conn.cursor() as cur:
-            cur.execute("SELECT 1 FROM trans_logs WHERE id = %s", (trans_id,))
-            if not cur.fetchone():
-                cur.execute("UPDATE users SET balance = balance + %s, total_deposit = total_deposit + %s WHERE uid = %s", (amount, amount, uid))
-                cur.execute("INSERT INTO trans_logs (id, uid, amount) VALUES (%s, %s, %s)", (trans_id, uid, amount))
-                db.conn.commit()
-                send_tele_msg(uid, f"✅ **AUTO NẠP THÀNH CÔNG**\n💰 Số dư: `+{amount:,.0f}đ`\n🔥 Chúc bạn chơi game vui vẻ!")
-                send_tele_msg(ADMIN_ID, f"💰 **THÔNG BÁO:** ID `{uid}` vừa nạp `{amount:,.0f}đ` tự động qua MSB.")
-    return jsonify({"status": "ok"}), 200
+db = CoreDB()
 
 # ==========================================
-# 🎮 HANDLERS (BẢN 13.15)
+# 🛠️ ADMIN CONTROL PANEL (DÀNH RIÊNG CHO BẠN)
+# ==========================================
+def admin_menu(update, context):
+    if update.effective_user.id != ADMIN_ID: return
+    
+    stats = db.exec("SELECT COUNT(*) as users, SUM(balance) as vault FROM users", fetch=True)[0]
+    wr = db.exec("SELECT value FROM admin_config WHERE key = 'win_rate'", fetch=True)[0]['value']
+    
+    txt = (f"👑 **HỆ THỐNG QUẢN TRỊ ADMIN**\n"
+           f"────────────────────\n"
+           f"👥 Tổng khách: `{stats['users']}`\n"
+           f"💰 Tổng quỹ ví: `{stats['vault'] or 0:,.0f}đ`\n"
+           f"📈 Tỉ lệ thắng hiện tại: `{wr}%`\n"
+           f"────────────────────\n"
+           f"🛠 **Lệnh điều khiển:**\n"
+           f"1️⃣ `/addmoney [ID] [Số_tiền]` - Cộng tiền\n"
+           f"2️⃣ `/submoney [ID] [Số_tiền]` - Trừ tiền\n"
+           f"3️⃣ `/setwin [Phần_trăm]` - Chỉnh tỉ lệ thắng\n"
+           f"4️⃣ `/ban [ID]` - Khóa tài khoản\n"
+           f"5️⃣ `/check [ID]` - Soi lịch sử cược")
+    update.message.reply_text(txt, parse_mode=ParseMode.MARKDOWN)
+
+def admin_actions(update, context):
+    if update.effective_user.id != ADMIN_ID: return
+    cmd = update.message.text.split()
+    try:
+        if "/addmoney" in cmd:
+            uid, amt = int(cmd[1]), float(cmd[2])
+            db.exec("UPDATE users SET balance = balance + %s WHERE uid = %s", (amt, uid))
+            db.exec("INSERT INTO balance_logs (uid, amount, reason) VALUES (%s, %s, %s)", (uid, amt, "Admin cộng tiền"))
+            update.message.reply_text(f"✅ Đã cộng {amt:,.0f}đ cho ID {uid}")
+        
+        elif "/setwin" in cmd:
+            rate = cmd[1]
+            db.exec("UPDATE admin_config SET value = %s WHERE key = 'win_rate'", (rate,))
+            update.message.reply_text(f"✅ Đã chỉnh tỉ lệ thắng hệ thống thành {rate}%")
+    except Exception as e: update.message.reply_text(f"Lỗi: {str(e)}")
+
+# ==========================================
+# 🎲 HỆ THỐNG ĐA TRÒ CHƠI (MULTI-GAMES)
+# ==========================================
+
+# 1. Logic Tài Xỉu
+def play_taixiu(uid, bet_amt, choice):
+    # Check Win Rate
+    win_rate = int(db.exec("SELECT value FROM admin_config WHERE key = 'win_rate'", fetch=True)[0]['value'])
+    dices = [random.randint(1,6) for _ in range(3)]
+    total = sum(dices)
+    res = "tai" if total >= 11 else "xiu"
+    
+    # Can thiệp tỉ lệ
+    if random.randint(1, 100) > win_rate:
+        if choice == "tai": dices = [1, 2, 2]; total = 5; res = "xiu"
+        else: dices = [5, 5, 6]; total = 16; res = "tai"
+
+    is_win = (choice == res)
+    return is_win, dices, total, res
+
+# 2. Logic Bầu Cua
+def play_baucua(uid, bet_amt, choice):
+    items = ["Bầu", "Cua", "Tôm", "Cá", "Gà", "Nai"]
+    results = [random.choice(items) for _ in range(3)]
+    match_count = results.count(choice)
+    return match_count, results
+
+# ==========================================
+# 📩 XỬ LÝ GIAO DIỆN & TIN NHẮN
+# ==========================================
+def main_menu():
+    return ReplyKeyboardMarkup([
+        [KeyboardButton("🎲 TÀI XỈU"), KeyboardButton("🦀 BẦU CUA")],
+        [KeyboardButton("⚖️ CHẴN LẺ"), KeyboardButton("🎡 VÒNG QUAY")],
+        [KeyboardButton("🏦 NẠP/RÚT"), KeyboardButton("👤 CÁ NHÂN")],
+        [KeyboardButton("🤝 ĐẠI LÝ"), KeyboardButton("🏆 TOP BXH")]
+    ], resize_keyboard=True)
+
+def handle_message(update, context):
+    uid = update.effective_user.id
+    text = update.message.text
+    user = db.exec("SELECT * FROM users WHERE uid = %s", (uid,), fetch=True)[0]
+
+    if text == "🎲 TÀI XỈU":
+        kb = [[InlineKeyboardButton("🔴 TÀI", callback_data="tx_tai"), InlineKeyboardButton("⚫ XỈU", callback_data="tx_xiu")],
+              [InlineKeyboardButton("10k", callback_data="set_10"), InlineKeyboardButton("50k", callback_data="set_50"), InlineKeyboardButton("Hết tay", callback_data="set_all")]]
+        update.message.reply_text(f"🎲 **SÒNG TÀI XỈU VIP**\nSố dư: `{user['balance']:,.0f}đ`\nChọn mức cược và cửa:", reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.MARKDOWN)
+
+    elif text == "🦀 BẦU CUA":
+        kb = [[InlineKeyboardButton(i, callback_data=f"bc_{i}") for i in ["Bầu", "Cua", "Tôm"]],
+              [InlineKeyboardButton(i, callback_data=f"bc_{i}") for i in ["Cá", "Gà", "Nai"]]]
+        update.message.reply_text("🦀 **BẦU CUA TÔM CÁ**\nĐặt 1 được 3, chọn linh vật của bạn:", reply_markup=InlineKeyboardMarkup(kb))
+
+    elif text == "🏦 NẠP/RÚT":
+        txt = (f"💳 **QUẢN LÝ TÀI CHÍNH**\n"
+               f"Số dư: `{user['balance']:,.0f}đ`\n"
+               f"Nạp tiền: Chuyển khoản MSB nội dung `{uid}`\n"
+               f"Rút tiền: `/rut [Số_tiền] [STK] [Ngân_hàng]`")
+        update.message.reply_text(txt, parse_mode=ParseMode.MARKDOWN)
+
+# ==========================================
+# ⚙️ CALLBACK GAME ENGINE
+# ==========================================
+user_bet_tmp = {} # Lưu mức cược người dùng {uid: amount}
+
+def callback_handler(update, context):
+    query = update.callback_query
+    uid = query.from_user.id
+    data = query.data
+    user = db.exec("SELECT * FROM users WHERE uid = %s", (uid,), fetch=True)[0]
+
+    if data.startswith("set_"):
+        amt = data.split("_")[1]
+        user_bet_tmp[uid] = user['balance'] if amt == "all" else int(amt)*1000
+        query.answer(f"Đã chọn mức cược: {user_bet_tmp[uid]:,.0f}đ")
+        
+    elif data.startswith("tx_"):
+        choice = data.split("_")[1]
+        bet = user_bet_tmp.get(uid, 10000)
+        if user['balance'] < bet: return query.answer("Số dư không đủ!", show_alert=True)
+        
+        win, ds, total, res = play_taixiu(uid, bet, choice)
+        if win:
+            prize = bet * (2 - TAX)
+            db.exec("UPDATE users SET balance = balance + %s WHERE uid = %s", (prize - bet, uid))
+            msg = f"✅ **THẮNG RỰC RỠ**\n🎲 `{ds[0]}+{ds[1]}+{ds[2]} = {total}` ({res.upper()})\n💰 Nhận: `+{prize:,.0f}đ`"
+        else:
+            db.exec("UPDATE users SET balance = balance - %s WHERE uid = %s", (bet, uid))
+            msg = f"❌ **THUA RỒI**\n🎲 `{ds[0]}+{ds[1]}+{ds[2]} = {total}` ({res.upper()})\n💸 Mất: `-{bet:,.0f}đ`"
+        query.edit_message_text(msg, reply_markup=query.message.reply_markup, parse_mode=ParseMode.MARKDOWN)
+
+# ==========================================
+# 🚀 KHỞI CHẠY HỆ THỐNG
 # ==========================================
 def start(update, context):
     uid = update.effective_user.id
-    user = db.get_user(uid)
-    if not user:
-        ref = int(context.args[0]) if context.args and context.args[0].isdigit() else 0
-        with db.conn.cursor() as cur:
-            cur.execute("INSERT INTO users (uid, username, ref_by) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING", 
-                        (uid, update.effective_user.username, ref))
-            db.conn.commit()
-        user = db.get_user(uid)
-
-    txt = (f"🚀 **TRUMTX - CASINO ĐẲNG CẤP 2026**\n"
-           f"────────────────────\n"
-           f"🆔 ID: `{uid}`\n"
-           f"💰 Số dư: `{user['balance']:,.0f}đ`\n"
-           f"📥 Tổng nạp: `{user['total_deposit']:,.0f}đ`\n"
-           f"🤝 Hoa hồng: `{(user['total_bet']*0.005):,.0f}đ`\n"
-           f"────────────────────\n"
-           f"⚠️ *Điều kiện rút:* Nạp tích lũy đủ **30,000đ**")
-    
-    kb = [
-        [InlineKeyboardButton("🎲 TÀI XỈU", callback_data='game_tx'), InlineKeyboardButton("🎡 VÒNG QUAY", callback_data='wheel')],
-        [InlineKeyboardButton("💵 NẠP TIỀN", callback_data='nap'), InlineKeyboardButton("💸 RÚT TIỀN", callback_data='rut')],
-        [InlineKeyboardButton("🎁 GIFTCODE", callback_data='gift'), InlineKeyboardButton("🎯 NHIỆM VỤ", callback_data='mission')],
-        [InlineKeyboardButton("🤝 ĐẠI LÝ", callback_data='affiliate'), InlineKeyboardButton("📞 HỖ TRỢ", url=SUPPORT_LINK)]
-    ]
-    update.message.reply_text(txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.MARKDOWN)
-
-def handle_callback(update, context):
-    query = update.callback_query
-    uid = query.from_user.id
-    user = db.get_user(uid)
-    data = query.data
-
-    if data == 'nap':
-        txt = (f"🏦 **NẠP TIỀN TỰ ĐỘNG (MSB)**\n"
-               f"────────────────────\n"
-               f"🏧 Ngân hàng: `{BANK_NAME}`\n"
-               f"🔢 STK: `{BANK_ACC}`\n"
-               f"👤 Chủ TK: `{BANK_USER}`\n"
-               f"📝 Nội dung: `{uid}`\n"
-               f"────────────────────\n"
-               f"⚠️ **Lưu ý:** Chuyển đúng nội dung là ID của bạn!")
-        query.message.reply_text(txt, parse_mode=ParseMode.MARKDOWN)
-
-    elif data == 'rut':
-        if user['total_deposit'] < MIN_DEPOSIT_RUT:
-            query.answer(f"❌ Cần nạp đủ {MIN_DEPOSIT_RUT:,.0f}đ!", show_alert=True)
-        else:
-            query.message.reply_text("Gõ: `/rut [Số_tiền] [STK] [Ngân_hàng]`")
-
-    elif data == 'mission':
-        today = datetime.now().date()
-        with db.conn.cursor() as cur:
-            cur.execute("SELECT 1 FROM checkins WHERE uid = %s AND date = %s", (uid, today))
-            if cur.fetchone():
-                query.answer("❌ Đã điểm danh rồi!", show_alert=True)
-            else:
-                bonus = random.randint(1000, 3000)
-                cur.execute("INSERT INTO checkins VALUES (%s, %s)", (uid, today))
-                cur.execute("UPDATE users SET balance = balance + %s WHERE uid = %s", (bonus, uid))
-                db.conn.commit()
-                query.answer(f"✅ +{bonus:,.0f}đ", show_alert=True)
-
-# ==========================================
-# 👑 ADMIN PANEL (BẢN 13.15)
-# ==========================================
-def admin_panel(update, context):
-    if update.effective_user.id != ADMIN_ID: return
-    with db.conn.cursor() as cur:
-        cur.execute("SELECT COUNT(*), SUM(balance), SUM(total_deposit) FROM users")
-        s = cur.fetchone()
-        cur.execute("SELECT value FROM system_config WHERE key = 'win_rate'")
-        rate = cur.fetchone()[0]
-    
-    txt = (f"👑 **ADMIN PANEL**\n"
-           f"👥 Khách: `{s[0]}`\n"
-           f"💰 Ví khách: `{s[1] or 0:,.0f}đ`\n"
-           f"📈 Thắng: `{rate}%`\n"
-           f"🛠 Lệnh: /rate, /force, /duyet")
-    update.message.reply_text(txt, parse_mode=ParseMode.MARKDOWN)
-
-def admin_duyet_rut(update, context):
-    if update.effective_user.id != ADMIN_ID: return
-    try:
-        target_uid = int(context.args[0])
-        amt = float(context.args[1])
-        with db.conn.cursor() as cur:
-            cur.execute("UPDATE users SET balance = balance - %s WHERE uid = %s", (amt, target_uid))
-            db.conn.commit()
-        send_tele_msg(target_uid, f"✅ Admin đã chuyển `{amt:,.0f}đ`!")
-        update.message.reply_text("✅ Đã duyệt!")
-    except: update.message.reply_text("Lỗi cú pháp!")
-
-# ==========================================
-# 🚀 RUNNING
-# ==========================================
-def run_flask():
-    app_flask.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+    if not db.exec("SELECT * FROM users WHERE uid = %s", (uid,), fetch=True):
+        db.exec("INSERT INTO users (uid, username) VALUES (%s, %s)", (uid, update.effective_user.username))
+    update.message.reply_text("💎 **TRUMTX SUPREME v2**\nHệ thống Casino uy tín số 1 Telegram.", reply_markup=main_menu())
 
 if __name__ == '__main__':
-    Thread(target=run_flask).start()
-    # Dùng Updater thay cho Application (v13.15)
     updater = Updater(TOKEN, use_context=True)
     dp = updater.dispatcher
-    
     dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("admin", admin_panel))
-    dp.add_handler(CommandHandler("duyet", admin_duyet_rut))
-    dp.add_handler(CallbackQueryHandler(handle_callback))
+    dp.add_handler(CommandHandler("admin", admin_menu))
+    dp.add_handler(MessageHandler(Filters.regex(r'^/'), admin_actions)) # Xử lý các lệnh admin /addmoney, /setwin...
+    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
+    dp.add_handler(CallbackQueryHandler(callback_handler))
     
-    print("🚀 TRUMTX SUPREME IS ONLINE!")
+    print("🚀 SERVER IS LIVE!")
     updater.start_polling()
     updater.idle()
-    
