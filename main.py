@@ -13,7 +13,7 @@ from psycopg2.extras import RealDictCursor
 # ==========================================
 TOKEN = "8755060469:AAEfrc5Gj5Crr6RxP9gnxDrehbL_W7NsjIE"
 ADMIN_ID = 7816353760  # ID Telegram của bạn
-DB_URL = "postgresql://postgres:[96886693002613]@db.naghdswctyyvzfdnforu.supabase.co:5432/postgres" # Link Database Supabase
+DB_URL = "postgresql://postgres.naghdswctyyvzfdnforu:[96886693002613]@aws-1-ap-southeast-2.pooler.supabase.com:5432/postgres" # Link Database Supabase
 CHANNEL_ID = "@TRUMTXCL" # Kênh nổ hũ/rút tiền
 SUPPORT_LINK = "https://t.me/nth_dev"
 MIN_DEPOSIT_RUT = 30000 # Nạp đủ 30k mới mở khóa rút
