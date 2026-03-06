@@ -183,7 +183,6 @@ class UI:
 
         return InlineKeyboardMarkup(layout)
 
-# =============================================================
 class Casino_Engine:
     def __init__(self, db_instance):
         self.db = db_instance
@@ -191,45 +190,41 @@ class Casino_Engine:
             1: "1️⃣", 2: "2️⃣", 3: "3️⃣", 4: "4️⃣", 5: "5️⃣", 6: "6️⃣",
             "bau": "🎃", "cua": "🦀", "tom": "🦞", "ca": "🐟", "ga": "🐔", "nai": "🦌"
         }
-    # CHỖ NÀY PHẢI TRỐNG - KHÔNG ĐƯỢC CÓ DÒNG NÀO LẤY BALANCE Ở ĐÂY HẾT!
 
-        """Logic Tài Xỉu có can thiệp Winrate và lưu vết hệ thống"""
-        # 1. Kiểm tra số dư & Trừ tiền trước
-        user = self.db.query("SELECT balance FROM users WHERE uid = %s", (uid,))[0]
-        if user['balance'] < amount:
-            return None, "❌ Số dư không đủ!"
-
+    def process_taixiu(self, uid, choice, amount, global_wr):
+        # 1. Kiểm tra số dư người dùng
+        user_res = self.db.query("SELECT balance FROM users WHERE uid = %s", (uid,))
+        if not user_res or user_res[0]['balance'] < amount:
+            return None, "❌ Số dư không đủ để cược!"
+        
+        # Trừ tiền cược trước
         self.db.query("UPDATE users SET balance = balance - %s, total_bet = total_bet + %s WHERE uid = %s", 
-                      (amount, amount, uid), fetch=False)
+                     (amount, amount, uid), fetch=False)
 
-        # 2. Quay xúc xắc (Dựa trên Winrate)
+        # 2. Quay xúc xắc ngẫu nhiên
         dices = [random.randint(1, 6) for _ in range(3)]
         total = sum(dices)
         result = "tai" if total >= 11 else "xiu"
 
-        # Can thiệp Winrate: Nếu random > Winrate thì ép thua
+        # 3. Can thiệp Winrate (Nếu không trúng tỉ lệ thắng thì ép thua)
         if random.randint(1, 100) > global_wr:
             if choice == "tai" and result == "tai":
                 dices = [random.randint(1, 3), random.randint(1, 3), random.randint(1, 4)]
             elif choice == "xiu" and result == "xiu":
                 dices = [random.randint(4, 6), random.randint(4, 6), random.randint(3, 6)]
             total = sum(dices)
-            result = "xiu" if total < 11 else "tai"
+            result = "tai" if total >= 11 else "xiu"
 
-        # 3. Tính tiền thắng
+        # 4. Trả kết quả
         is_win = (choice == result)
-        win_amount = int(amount * 1.95) if is_win else 0
-
+        win_amt = int(amount * 1.95) if is_win else 0
         if is_win:
-            self.db.query("UPDATE users SET balance = balance + %s, total_win = total_win + %s, exp = exp + %s WHERE uid = %s", 
-                          (win_amount, win_amount, int(amount/1000), uid), fetch=False)
-        
+            self.db.query("UPDATE users SET balance = balance + %s, total_win = total_win + %s WHERE uid = %s",
+                         (win_amt, win_amt, uid), fetch=False)
+
         return {
-            "dices": dices,
-            "total": total,
-            "result": result,
-            "is_win": is_win,
-            "win_amount": win_amount,
+            "dices": dices, "total": total, "result": result,
+            "is_win": is_win, "win_amount": win_amt,
             "dice_icons": [self.icons[d] for d in dices]
         }, None
 
