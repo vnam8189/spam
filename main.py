@@ -7,12 +7,13 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 
 # ==========================================
-# ⚙️ CẤU HÌNH HỆ THỐNG (GIỮ NGUYÊN)
+# ⚙️ CẤU HÌNH HỆ THỐNG
 # ==========================================
 TOKEN = "8755060469:AAEfrc5Gj5Crr6RxP9gnxDrehbL_W7NsjIE"
 ADMIN_ID = 7816353760
 DB_URL = "postgresql://postgres.naghdswctyyvzfdnforu:96886693002613@aws-1-ap-southeast-2.pooler.supabase.com:6543/postgres"
 
+# Thông tin thanh toán & Cộng đồng
 BANK_NAME = "MSB (Maritime Bank)"
 BANK_ACC = "96886693002613"
 BANK_USER = "NGUYEN THANH HOP"
@@ -20,7 +21,7 @@ GROUP_LINK = "https://t.me/TRUMTXCL"
 LOG_GROUP_ID = -1003778771904 
 
 # ==========================================
-# 🗄️ DATABASE ENGINE (MỞ RỘNG BẢNG GAME)
+# 🗄️ DATABASE ENGINE
 # ==========================================
 class Database:
     def __init__(self):
@@ -29,22 +30,39 @@ class Database:
 
     def setup(self):
         with self.conn.cursor() as cur:
-            # Bảng người dùng
+            # Bảng người dùng với đầy đủ thông số
             cur.execute('''CREATE TABLE IF NOT EXISTS users (
-                uid BIGINT PRIMARY KEY, username TEXT, balance DOUBLE PRECISION DEFAULT 0,
-                total_deposit DOUBLE PRECISION DEFAULT 0, total_bet DOUBLE PRECISION DEFAULT 0,
-                bank_acc TEXT, bank_name TEXT, bank_user TEXT,
-                ref_by BIGINT DEFAULT 0, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+                uid BIGINT PRIMARY KEY, 
+                username TEXT, 
+                balance DOUBLE PRECISION DEFAULT 0,
+                total_deposit DOUBLE PRECISION DEFAULT 0, 
+                total_bet DOUBLE PRECISION DEFAULT 0,
+                total_win DOUBLE PRECISION DEFAULT 0,
+                bank_acc TEXT, 
+                bank_name TEXT, 
+                bank_user TEXT,
+                ref_by BIGINT DEFAULT 0, 
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+            
             # Bảng rút tiền
             cur.execute('''CREATE TABLE IF NOT EXISTS withdraw_requests (
-                id SERIAL PRIMARY KEY, uid BIGINT, amount DOUBLE PRECISION, 
-                status TEXT DEFAULT 'pending', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-            # Bảng Giftcode
+                id SERIAL PRIMARY KEY, 
+                uid BIGINT, 
+                amount DOUBLE PRECISION, 
+                status TEXT DEFAULT 'pending', 
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+            
+            # Bảng Giftcode chuyên nghiệp
             cur.execute('''CREATE TABLE IF NOT EXISTS giftcodes (
-                code TEXT PRIMARY KEY, amount REAL, limit_use INTEGER, used INTEGER DEFAULT 0)''')
-            # Cấu hình Admin
+                code TEXT PRIMARY KEY, 
+                amount REAL, 
+                limit_use INTEGER, 
+                used INTEGER DEFAULT 0)''')
+
+            # Cấu hình Admin (Winrate, Bảo trì...)
             cur.execute("CREATE TABLE IF NOT EXISTS admin_config (key TEXT PRIMARY KEY, value TEXT)")
             cur.execute("INSERT INTO admin_config VALUES ('win_rate', '50') ON CONFLICT DO NOTHING")
+            cur.execute("INSERT INTO admin_config VALUES ('min_withdraw', '50000') ON CONFLICT DO NOTHING")
             self.conn.commit()
 
     def query(self, sql, params=None, fetch=True):
@@ -57,115 +75,162 @@ class Database:
 db = Database()
 
 # ==========================================
-# 🎮 LOGIC CÁC TRÒ CHƠI (KHÔNG CẮT XÉN)
+# 🎨 GIAO DIỆN UI/UX THỜI THƯỢNG
 # ==========================================
 
-class GameLogic:
-    @staticmethod
-    def play_taixiu(choice, win_rate):
-        dices = [random.randint(1, 6) for _ in range(3)]
-        total = sum(dices)
-        res = "tai" if total >= 11 else "xiu"
-        # Chỉnh tỉ lệ từ Admin
-        if random.randint(1, 100) > int(win_rate):
-            if choice == "tai": dices = [1, 2, 2]; total = 5; res = "xiu"
-            else: dices = [5, 5, 6]; total = 16; res = "tai"
-        return (choice == res), dices, total, res
-
-    @staticmethod
-    def play_chanle(choice):
-        num = random.randint(0, 9)
-        res = "chan" if num % 2 == 0 else "le"
-        return (choice == res), num, res
-
-    @staticmethod
-    def play_baucua(choice):
-        linh_vat = ["Bầu", "Cua", "Tôm", "Cá", "Gà", "Nai"]
-        res = [random.choice(linh_vat) for _ in range(3)]
-        win_count = res.count(choice)
-        return win_count, res
-
-# ==========================================
-# 🎨 UI/UX MENU (FULL CHỨC NĂNG)
-# ==========================================
-
-def main_menu():
-    kb = [
+def get_main_keyboard():
+    return ReplyKeyboardMarkup([
         [KeyboardButton("🎲 TÀI XỈU"), KeyboardButton("⚖️ CHẴN LẺ")],
         [KeyboardButton("🦀 BẦU CUA"), KeyboardButton("🎡 VÒNG QUAY")],
         [KeyboardButton("💰 NẠP TIỀN"), KeyboardButton("💸 RÚT TIỀN")],
         [KeyboardButton("👤 CÁ NHÂN"), KeyboardButton("🤝 ĐẠI LÝ")],
         [KeyboardButton("🎁 GIFTCODE"), KeyboardButton("📞 HỖ TRỢ")]
-    ]
-    return ReplyKeyboardMarkup(kb, resize_keyboard=True)
+    ], resize_keyboard=True)
 
-def admin_menu():
-    kb = [
-        [KeyboardButton("📈 CHỈNH WINRATE"), KeyboardButton("💰 CỘNG TIỀN")],
-        [KeyboardButton("📜 DUYỆT RÚT TIỀN"), KeyboardButton("🎁 TẠO GIFTCODE")],
-        [KeyboardButton("🏠 QUAY LẠI MENU CHÍNH")]
-    ]
-    return ReplyKeyboardMarkup(kb, resize_keyboard=True)
+def get_admin_keyboard():
+    return ReplyKeyboardMarkup([
+        [KeyboardButton("📈 SET WINRATE"), KeyboardButton("💳 CỘNG/TRỪ TIỀN")],
+        [KeyboardButton("📜 DUYỆT RÚT"), KeyboardButton("🎫 TẠO CODE")],
+        [KeyboardButton("🏠 VỀ MENU CHÍNH")]
+    ], resize_keyboard=True)
 
 # ==========================================
-# 📩 XỬ LÝ SỰ KIỆN CHÍNH
+# 🕹️ LOGIC GAMES (XANH CHÍN + CAN THIỆP)
 # ==========================================
 
-user_bet_amount = {} # Lưu mức cược tạm thời của user
+class CasinoLogic:
+    @staticmethod
+    def play_taixiu(choice, win_rate):
+        # random thật
+        dices = [random.randint(1, 6) for _ in range(3)]
+        total = sum(dices)
+        res = "tai" if total >= 11 else "xiu"
+        
+        # Can thiệp winrate nếu user quá đỏ hoặc admin muốn hút
+        if random.randint(1, 100) > int(win_rate):
+            if choice == "tai":
+                dices = [random.randint(1, 3), random.randint(1, 3), random.randint(1, 4)]
+            else:
+                dices = [random.randint(4, 6), random.randint(4, 6), random.randint(4, 6)]
+            total = sum(dices)
+            res = "tai" if total >= 11 else "xiu"
+            
+        return (choice == res), dices, total, res
 
-def on_text(update: Update, context: CallbackContext):
+    @staticmethod
+    def play_baucua(choice):
+        items = ["Bầu", "Cua", "Tôm", "Cá", "Gà", "Nai"]
+        results = [random.choice(items) for _ in range(3)]
+        win_count = results.count(choice)
+        return win_count, results
+
+# ==========================================
+# 📩 XỬ LÝ LỆNH NGƯỜI DÙNG
+# ==========================================
+
+user_context = {} # Lưu trạng thái cược: {uid: {'amount': 10000, 'game': 'tx'}}
+
+def start(update: Update, context: CallbackContext):
+    uid = update.effective_user.id
+    name = update.effective_user.first_name
+    
+    # Check user cũ/mới
+    check = db.query("SELECT * FROM users WHERE uid = %s", (uid,))
+    if not check:
+        db.query("INSERT INTO users (uid, username) VALUES (%s, %s)", (uid, name), fetch=False)
+
+    welcome_text = (
+        f"🔥 **CHÀO MỪNG ĐẾN VỚI TRUMTX - SIÊU PHẨM 2026** 🔥\n"
+        f"────────────────────\n"
+        f"👋 Xin chào: **{name}**\n"
+        f"🆔 ID của bạn: `{uid}`\n\n"
+        f"🎮 **Hệ thống sòng bài Telegram tự động:**\n"
+        f"💎 Nạp rút siêu tốc qua MSB (Auto 30s).\n"
+        f"🎲 Tài Xỉu, Chẵn Lẻ, Bầu Cua xanh chín.\n"
+        f"🤝 Hoa hồng đại lý cực khủng cho người giới thiệu.\n"
+        f"────────────────────\n"
+        f"✨ *Hãy chọn một trò chơi bên dưới để bắt đầu kiếm lúa!*"
+    )
+    
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("💬 THAM GIA GROUP UY TÍN", url=GROUP_LINK)]])
+    update.message.reply_text(welcome_text, reply_markup=get_main_keyboard(), parse_mode=ParseMode.MARKDOWN)
+    update.message.reply_text("👇 **CỘNG ĐỒNG TRUMTX:**", reply_markup=kb)
+
+def handle_text(update: Update, context: CallbackContext):
     uid = update.effective_user.id
     text = update.message.text
     user = db.query("SELECT * FROM users WHERE uid = %s", (uid,))[0]
 
+    # --- MENU TRÒ CHƠI ---
     if text == "🎲 TÀI XỈU":
-        kb = [[InlineKeyboardButton("🔴 TÀI (x1.95)", callback_data="game_tx_tai"), 
-               InlineKeyboardButton("⚫ XỈU (x1.95)", callback_data="game_tx_xiu")],
-              [InlineKeyboardButton("Mức cược: 10k", callback_data="setbet_10000"),
-               InlineKeyboardButton("Mức cược: 50k", callback_data="setbet_50000")]]
-        update.message.reply_text(f"🎲 **TÀI XỈU VIP**\nSố dư: {user['balance']:,.0f}đ\nChọn mức cược rồi chọn cửa:", reply_markup=InlineKeyboardMarkup(kb))
-
-    elif text == "⚖️ CHẴN LẺ":
-        kb = [[InlineKeyboardButton("🔵 CHẴN", callback_data="game_cl_chan"), 
-               InlineKeyboardButton("🔴 LẺ", callback_data="game_cl_le")]]
-        update.message.reply_text("⚖️ **CHẴN LẺ MOMO**\nTỉ lệ x1.95. Chọn cửa đặt:", reply_markup=InlineKeyboardMarkup(kb))
+        msg = (f"🎲 **SÒNG TÀI XỈU TRUMTX**\n"
+               f"💰 Số dư: `{user['balance']:,.0f}đ`\n"
+               f"────────────────────\n"
+               f"Chọn mức cược bên dưới:")
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("10K", callback_data="bet_10000"), InlineKeyboardButton("50K", callback_data="bet_50000"), InlineKeyboardButton("100K", callback_data="bet_100000")],
+            [InlineKeyboardButton("500K", callback_data="bet_500000"), InlineKeyboardButton("1M", callback_data="bet_1000000"), InlineKeyboardButton("TẤT TAY", callback_data="bet_all")],
+            [InlineKeyboardButton("🔴 ĐẶT TÀI", callback_data="play_tx_tai"), InlineKeyboardButton("⚫ ĐẶT XỈU", callback_data="play_tx_xiu")]
+        ])
+        update.message.reply_text(msg, reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
 
     elif text == "🦀 BẦU CUA":
-        kb = [[InlineKeyboardButton(i, callback_data=f"game_bc_{i}") for i in ["Bầu", "Cua", "Tôm"]],
-              [InlineKeyboardButton(i, callback_data=f"game_bc_{i}") for i in ["Cá", "Gà", "Nai"]]]
-        update.message.reply_text("🦀 **BẦU CUA TÔM CÁ**\nChọn linh vật bạn muốn đặt cược:", reply_markup=InlineKeyboardMarkup(kb))
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Bầu", callback_data="bc_Bầu"), InlineKeyboardButton("Cua", callback_data="bc_Cua"), InlineKeyboardButton("Tôm", callback_data="bc_Tôm")],
+            [InlineKeyboardButton("Cá", callback_data="bc_Cá"), InlineKeyboardButton("Gà", callback_data="bc_Gà"), InlineKeyboardButton("Nai", callback_data="bc_Nai")],
+            [InlineKeyboardButton("Mức: 20K", callback_data="bet_20000"), InlineKeyboardButton("Mức: 100K", callback_data="bet_100000")]
+        ])
+        update.message.reply_text("🦀 **BẦU CUA TÔM CÁ**\nChọn linh vật và mức cược:", reply_markup=kb)
 
+    # --- TÀI CHÍNH ---
     elif text == "💰 NẠP TIỀN":
-        update.message.reply_text(f"🏦 **NẠP TIỀN**\nBank: {BANK_NAME}\nSTK: `{BANK_ACC}`\nNội dung: `{uid}`")
+        msg = (f"🏦 **HỆ THỐNG NẠP TỰ ĐỘNG (MSB)**\n"
+               f"────────────────────\n"
+               f"🏧 Ngân hàng: **{BANK_NAME}**\n"
+               f"🔢 Số tài khoản: `{BANK_ACC}`\n"
+               f"👤 Chủ TK: **{BANK_USER}**\n"
+               f"📝 Nội dung: `{uid}`\n"
+               f"────────────────────\n"
+               f"⚠️ **Lưu ý:** Chuyển đúng nội dung là ID của bạn để được cộng tiền tự động sau 30s!")
+        update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
 
     elif text == "💸 RÚT TIỀN":
         if not user['bank_acc']:
-            update.message.reply_text("❌ Chưa liên kết Bank! Cú pháp: `/link [STK] [BANK] [TÊN]`")
+            msg = ("⚠️ **BẠN CHƯA LIÊN KẾT NGÂN HÀNG**\n\n"
+                   "Vui lòng liên kết để rút tiền về chính chủ.\n"
+                   "👉 Cú pháp: `/link [STK] [TÊN_BANK] [TÊN_CHỦ_TK]`\n"
+                   "Ví dụ: `/link 96886693002613 MSB NGUYEN THANH HOP`\n\n"
+                   "❗ *Lưu ý: Chỉ liên kết 1 lần duy nhất!*")
+            update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
         else:
-            update.message.reply_text(f"🏦 Rút về: {user['bank_name']} - {user['bank_acc']}\nGõ `/rut [số_tiền]`")
+            msg = (f"🏦 **QUẢN LÝ RÚT TIỀN**\n"
+                   f"💰 Số dư: `{user['balance']:,.0f}đ`\n"
+                   f"🏦 Bank: `{user['bank_name']} - {user['bank_acc']}`\n"
+                   f"👤 Chủ: `{user['bank_user']}`\n"
+                   f"────────────────────\n"
+                   f"👉 Gõ lệnh: `/rut [số_tiền]` để tạo lệnh rút.")
+            update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
 
     elif text == "👤 CÁ NHÂN":
-        update.message.reply_text(f"👤 **THÔNG TIN**\nID: `{uid}`\nSố dư: `{user['balance']:,.0f}đ`")
+        bank_status = f"{user['bank_name']} ({user['bank_acc']})" if user['bank_acc'] else "Chưa liên kết"
+        msg = (f"👤 **HỒ SƠ NGƯỜI CHƠI**\n"
+               f"────────────────────\n"
+               f"🆔 ID: `{uid}`\n"
+               f"💰 Số dư: `{user['balance']:,.0f}đ`\n"
+               f"🏦 Ngân hàng: `{bank_status}`\n"
+               f"📊 Tổng cược: `{user['total_bet']:,.0f}đ`\n"
+               f"────────────────────")
+        update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
 
-    elif text == "🎁 GIFTCODE":
-        update.message.reply_text("Gõ `/giftcode [mã_code]` để nhận thưởng.")
-
+    # --- ADMIN ---
     elif text == "/admin" and uid == ADMIN_ID:
-        update.message.reply_text("👑 **ADMIN MODE**", reply_markup=admin_menu())
+        update.message.reply_text("👑 **CHÀO SẾP! HỆ THỐNG ĐÃ SẴN SÀNG.**", reply_markup=get_admin_keyboard())
 
-    elif text == "🏠 QUAY LẠI MENU CHÍNH":
-        update.message.reply_text("Đã về Menu chính.", reply_markup=main_menu())
-    
-    # Logic cho Admin
-    if uid == ADMIN_ID:
-        if text == "📜 DUYỆT RÚT TIỀN":
-            pending = db.query("SELECT * FROM withdraw_requests WHERE status = 'pending'")
-            for r in pending:
-                kb = [[InlineKeyboardButton("✅ Duyệt", callback_data=f"approve_{r['id']}"), InlineKeyboardButton("❌ Huỷ", callback_data=f"reject_{r['id']}")]]
-                update.message.reply_text(f"ID: {r['id']} | Rút: {r['amount']:,.0f}đ", reply_markup=InlineKeyboardMarkup(kb))
+    elif text == "🏠 VỀ MENU CHÍNH":
+        update.message.reply_text("Đã quay lại sảnh.", reply_markup=get_main_keyboard())
 
 # ==========================================
-# 🕹️ XỬ LÝ CALLBACK GAME (ĐIỀU KHIỂN GAME)
+# 🎮 XỬ LÝ CLICK NÚT GAME & DUYỆT RÚT
 # ==========================================
 
 def handle_callback(update: Update, context: CallbackContext):
@@ -174,64 +239,94 @@ def handle_callback(update: Update, context: CallbackContext):
     data = query.data
     user = db.query("SELECT * FROM users WHERE uid = %s", (uid,))[0]
 
-    # Cài đặt mức cược
-    if data.startswith("setbet_"):
-        amt = int(data.split("_")[1])
-        user_bet_amount[uid] = amt
-        query.answer(f"Đã chọn cược {amt:,.0f}đ")
+    if uid not in user_context: user_context[uid] = {'bet': 10000}
 
-    # Xử lý Tài Xỉu
-    elif data.startswith("game_tx_"):
+    # Chọn mức cược
+    if data.startswith("bet_"):
+        val = data.split("_")[1]
+        user_context[uid]['bet'] = user['balance'] if val == "all" else int(val)
+        query.answer(f"Đã chọn mức cược: {user_context[uid]['bet']:,.0f}đ")
+
+    # Chơi Tài Xỉu
+    elif data.startswith("play_tx_"):
         choice = data.split("_")[2]
-        bet = user_bet_amount.get(uid, 10000)
-        if user['balance'] < bet: return query.answer("Số dư không đủ!", show_alert=True)
+        bet = user_context[uid]['bet']
         
+        if user['balance'] < bet or bet < 1000:
+            return query.answer("Số dư không đủ hoặc mức cược không hợp lệ!", show_alert=True)
+
         wr = db.query("SELECT value FROM admin_config WHERE key='win_rate'")[0]['value']
-        win, dices, total, res = GameLogic.play_taixiu(choice, wr)
+        win, dices, total, res_text = CasinoLogic.play_taixiu(choice, wr)
+        
+        db.query("UPDATE users SET balance = balance - %s, total_bet = total_bet + %s WHERE uid = %s", (bet, bet, uid), fetch=False)
         
         if win:
-            prize = bet * 0.95
-            db.query("UPDATE users SET balance = balance + %s WHERE uid = %s", (prize, uid), fetch=False)
-            msg = f"🎉 **THẮNG!**\n🎲 {dices[0]}-{dices[1]}-{dices[2]} = {total} ({res.upper()})\n💰 Bạn nhận: +{bet+prize:,.0f}đ"
+            prize = bet * 1.95
+            db.query("UPDATE users SET balance = balance + %s, total_win = total_win + %s WHERE uid = %s", (prize, prize, uid), fetch=False)
+            result_msg = f"🎉 **THẮNG RỒI!**\n🎲 Kết quả: {dices[0]}-{dices[1]}-{dices[2]} = **{total} ({res_text.upper()})**\n💰 Nhận được: `+{prize:,.0f}đ`"
         else:
-            db.query("UPDATE users SET balance = balance - %s WHERE uid = %s", (bet, uid), fetch=False)
-            msg = f"❌ **THUA!**\n🎲 {dices[0]}-{dices[1]}-{dices[2]} = {total} ({res.upper()})\n💸 Mất: -{bet:,.0f}đ"
-        query.edit_message_text(msg, reply_markup=query.message.reply_markup)
-
-    # Xử lý Phê duyệt rút tiền (Gửi thông báo Group)
-    elif data.startswith("approve_"):
-        req_id = data.split("_")[1]
-        req = db.query("SELECT * FROM withdraw_requests WHERE id = %s", (req_id,))[0]
-        db.query("UPDATE withdraw_requests SET status = 'approved' WHERE id = %s", (req_id,), fetch=False)
+            result_msg = f"❌ **THẤT BẠI!**\n🎲 Kết quả: {dices[0]}-{dices[1]}-{dices[2]} = **{total} ({res_text.upper()})**\n💸 Mất: `-{bet:,.0f}đ`"
         
-        # Thông báo Group
-        context.bot.send_message(LOG_GROUP_ID, f"✅ **RÚT TIỀN THÀNH CÔNG**\n👤 Khách: {req['uid']}\n💰 Số tiền: {req['amount']:,.0f}đ\n🕒 {datetime.now().strftime('%H:%M')}")
-        query.edit_message_text(f"✅ Đã duyệt lệnh {req_id}")
+        query.edit_message_text(result_msg, reply_markup=query.message.reply_markup, parse_mode=ParseMode.MARKDOWN)
+
+    # Duyệt rút tiền (Cho Admin)
+    elif data.startswith("approve_"):
+        if uid != ADMIN_ID: return
+        rid = data.split("_")[1]
+        req = db.query("SELECT * FROM withdraw_requests WHERE id = %s", (rid,))[0]
+        db.query("UPDATE withdraw_requests SET status = 'approved' WHERE id = %s", (rid,), fetch=False)
+        
+        # Thông báo cho user
+        context.bot.send_message(req['uid'], f"✅ **RÚT TIỀN THÀNH CÔNG**\nSố tiền `{req['amount']:,.0f}đ` đã được chuyển về tài khoản của bạn.")
+        # Gửi log vào group
+        log = (f"💸 **THÔNG BÁO RÚT TIỀN**\n"
+               f"────────────────────\n"
+               f"👤 Người chơi: ID `{req['uid']}`\n"
+               f"💰 Số tiền: `{req['amount']:,.0f} VNĐ`\n"
+               f"✅ Trạng thái: **Thành công**\n"
+               f"🕒 {datetime.now().strftime('%H:%M:%S %d/%m/%Y')}")
+        context.bot.send_message(LOG_GROUP_ID, log, parse_mode=ParseMode.MARKDOWN)
+        query.edit_message_text(f"✅ Đã duyệt lệnh #{rid}")
 
 # ==========================================
-# 🚀 KHỞI CHẠY (BẢN FULL KHÔNG CẮT)
+# 🚀 KHỞI CHẠY HỆ THỐNG
 # ==========================================
 
-def start(update: Update, context: CallbackContext):
+def link_bank(update: Update, context: CallbackContext):
     uid = update.effective_user.id
-    if not db.query("SELECT * FROM users WHERE uid = %s", (uid,)):
-        db.query("INSERT INTO users (uid, username) VALUES (%s, %s)", (uid, update.effective_user.username), fetch=False)
-    
-    kb = [[InlineKeyboardButton("💬 Group TrumTX/CL", url=GROUP_LINK)]]
-    update.message.reply_text(f"👋 Chào mừng bạn đến với **TRUMTX**!\nHệ thống nạp rút tự động, uy tín xanh chín.", 
-                              reply_markup=main_menu(), parse_mode=ParseMode.MARKDOWN)
-    update.message.reply_text("Tham gia Group để nhận code:", reply_markup=InlineKeyboardMarkup(kb))
+    try:
+        stk, bank, name = context.args[0], context.args[1], " ".join(context.args[2:]).upper()
+        db.query("UPDATE users SET bank_acc=%s, bank_name=%s, bank_user=%s WHERE uid=%s", (stk, bank, name, uid), fetch=False)
+        update.message.reply_text(f"✅ **LIÊN KẾT THÀNH CÔNG!**\nSTK: `{stk}`\nBank: `{bank}`\nChủ: `{name}`", parse_mode=ParseMode.MARKDOWN)
+    except:
+        update.message.reply_text("❌ Sai cú pháp! Ví dụ: `/link 123456 MSB NGUYEN VAN A`")
+
+def withdraw(update: Update, context: CallbackContext):
+    uid = update.effective_user.id
+    user = db.query("SELECT balance, bank_acc FROM users WHERE uid = %s", (uid,))[0]
+    try:
+        amount = float(context.args[0])
+        if not user['bank_acc']: return update.message.reply_text("❌ Bạn chưa liên kết ngân hàng!")
+        if amount < 50000: return update.message.reply_text("❌ Rút tối thiểu 50,000đ")
+        if user['balance'] < amount: return update.message.reply_text("❌ Số dư không đủ!")
+        
+        db.query("UPDATE users SET balance = balance - %s WHERE uid = %s", (amount, uid), fetch=False)
+        db.query("INSERT INTO withdraw_requests (uid, amount) VALUES (%s, %s)", (uid, amount), fetch=False)
+        update.message.reply_text("✅ **GỬI YÊU CẦU THÀNH CÔNG!**\nVui lòng chờ Admin duyệt lệnh.")
+        context.bot.send_message(ADMIN_ID, f"🔔 **LỆNH RÚT MỚI:** ID {uid} rút {amount:,.0f}đ")
+    except:
+        update.message.reply_text("❌ Cú pháp: `/rut [số_tiền]`")
 
 if __name__ == '__main__':
     updater = Updater(TOKEN, use_context=True)
     dp = updater.dispatcher
+
     dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("link", lambda u, c: db.query("UPDATE users SET bank_acc=%s, bank_name=%s, bank_user=%s WHERE uid=%s", (c.args[0], c.args[1], " ".join(c.args[2:]).upper(), u.effective_user.id), fetch=False) or u.message.reply_text("✅ Đã liên kết!")))
-    dp.add_handler(CommandHandler("rut", lambda u, c: db.query("INSERT INTO withdraw_requests (uid, amount) VALUES (%s, %s)", (u.effective_user.id, float(c.args[0])), fetch=False) or u.message.reply_text("✅ Đã gửi yêu cầu rút!")))
-    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, on_text))
+    dp.add_handler(CommandHandler("link", link_bank))
+    dp.add_handler(CommandHandler("rut", withdraw))
+    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_text))
     dp.add_handler(CallbackQueryHandler(handle_callback))
     
-    print("🚀 TRUMTX MEGA SUPREME IS ONLINE!")
+    print("💎 TRUMTX SUPREME V4 IS LIVE! NO LIMITS!")
     updater.start_polling()
     updater.idle()
-      
