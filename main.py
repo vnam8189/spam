@@ -1,248 +1,269 @@
-import os
-import asyncio
-import random
-from flask import Flask
+import os, re, requests, json, random, asyncio
+from datetime import datetime, timedelta
 from threading import Thread
-from telethon import TelegramClient, events, Button
-from telethon.tl.functions.channels import JoinChannelRequest
-from telethon.errors import FloodWaitError, SessionPasswordNeededError
+from flask import Flask, request, jsonify
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.constants import ParseMode
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
-# --- CẤU HÌNH ---
-API_ID = 36437338 
-API_HASH = '18d34c7efc396d277f3db62baa078efc'
-BOT_TOKEN = '8499499024:AAFSifEjBAKL2BSmanDDlXuRGh93zvZjM78'
-ADMIN_ID = 7816353760 
+# ==========================================
+# ⚙️ CẤU HÌNH HỆ THỐNG (THAY Ở ĐÂY)
+# ==========================================
+TOKEN = "8755060469:AAEfrc5Gj5Crr6RxP9gnxDrehbL_W7NsjIE"
+ADMIN_ID = 7816353760  # ID Telegram của bạn
+DB_URL = "https://naghdswctyyvzfdnforu.supabase.co" # Link Database Supabase
+CHANNEL_ID = "@TRUMTXCL" # Kênh nổ hũ/rút tiền
+SUPPORT_LINK = "https://t.me/nth_dev"
+MIN_DEPOSIT_RUT = 30000 # Nạp đủ 30k mới mở khóa rút
 
-SESSION_DIR = 'sessions'
-GROUP_FILE = 'groups.txt'
-MSG_FILE = 'ad_msg.txt'
+# Thông tin hiển thị nạp
+BANK_NAME = "MSB (Maritime Bank)"
+BANK_ACC = "96886693002613"
+BANK_USER = "NGUYEN THANH HOP"
 
-if not os.path.exists(SESSION_DIR): os.makedirs(SESSION_DIR)
-if not os.path.exists(GROUP_FILE): open(GROUP_FILE, 'w').close()
-if not os.path.exists(MSG_FILE): 
-    with open(MSG_FILE, 'w', encoding='utf-8') as f: 
-        f.write("Nhóm chéo chất lượng ae vào chéo đi : Tham gia ngay (Link nhóm)")
+# ==========================================
+# 🗄️ MODULE DATABASE (ANTI-CLONE & LOGS)
+# ==========================================
+class Database:
+    def __init__(self):
+        self.conn = psycopg2.connect(DB_URL, sslmode='require')
+        self.setup()
 
-ICONS = ["🔥", "🚀", "💎", "🧧", "🍀", "✨", "🎯", "⚡", "🌈", "💰"]
-KEYWORDS_REPLY = ["bot", "link", "chéo", "admin", "đâu"]
-is_spamming = False
-last_messages = {} 
-clones = {} 
+    def setup(self):
+        with self.conn.cursor() as cur:
+            # Bảng Người dùng
+            cur.execute('''CREATE TABLE IF NOT EXISTS users (
+                uid BIGINT PRIMARY KEY, username TEXT, balance DOUBLE PRECISION DEFAULT 0,
+                total_deposit DOUBLE PRECISION DEFAULT 0, total_bet DOUBLE PRECISION DEFAULT 0,
+                ref_by BIGINT DEFAULT 0, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+            # Bảng Giftcode
+            cur.execute('''CREATE TABLE IF NOT EXISTS giftcodes (
+                code TEXT PRIMARY KEY, amount REAL, max_uses INTEGER, used_count INTEGER DEFAULT 0)''')
+            cur.execute('''CREATE TABLE IF NOT EXISTS gift_history (uid BIGINT, code TEXT, PRIMARY KEY(uid, code))''')
+            # Bảng Giao dịch SePay (Chống cộng đúp)
+            cur.execute('''CREATE TABLE IF NOT EXISTS trans_logs (id TEXT PRIMARY KEY, uid BIGINT, amount REAL)''')
+            # Bảng Cấu hình Bẻ Cầu
+            cur.execute("CREATE TABLE IF NOT EXISTS system_config (key TEXT PRIMARY KEY, value REAL)")
+            cur.execute("INSERT INTO system_config VALUES ('win_rate', 50) ON CONFLICT DO NOTHING")
+            cur.execute("INSERT INTO system_config VALUES ('force_result', -1) ON CONFLICT DO NOTHING")
+            # Bảng Điểm danh hằng ngày
+            cur.execute('''CREATE TABLE IF NOT EXISTS checkins (uid BIGINT, date DATE, PRIMARY KEY(uid, date))''')
+            self.conn.commit()
 
-# --- WEB SERVER (RENDER) ---
-app = Flask('')
-@app.route('/')
-def home(): return "🤖 Bot Clone V8.9 PRO is Active!"
+    def get_user(self, uid):
+        with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT * FROM users WHERE uid = %s", (uid,))
+            return cur.fetchone()
 
-def run_web():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port, use_reloader=False)
+db = Database()
 
-# --- QUẢN LÝ DỮ LIỆU ---
-def get_ad_msg():
-    with open(MSG_FILE, 'r', encoding='utf-8') as f: return f.read()
+# ==========================================
+# 💰 MODULE AUTO BANK SEPAY (MSB)
+# ==========================================
+app_flask = Flask(__name__)
 
-def load_groups():
-    if not os.path.exists(GROUP_FILE): return []
-    with open(GROUP_FILE, 'r') as f: return [line.strip() for line in f.readlines() if line.strip()]
+def send_tele_msg(chat_id, text):
+    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    requests.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"})
 
-def save_group(group):
-    groups = load_groups()
-    if group not in groups:
-        with open(GROUP_FILE, 'a') as f: f.write(group + '\n')
+@app_flask.route('/webhook/sepay', methods=['POST'])
+def sepay_webhook():
+    data = request.json
+    content = data.get('transactionContent', '').upper()
+    amount = float(data.get('transferAmount', 0))
+    trans_id = str(data.get('id'))
 
-def get_safe_text():
-    inv = "".join(random.choices(['\u200b', '\u200c', '\u200d'], k=random.randint(4, 10)))
-    return f"{random.choice(ICONS)} {get_ad_msg()} {random.choice(ICONS)}\n{inv}"
+    # Regex tìm ID khách trong nội dung nạp (Ví dụ: "NAP 123456")
+    match = re.search(r'\d{6,15}', content)
+    if match:
+        uid = int(match.group())
+        with db.conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM trans_logs WHERE id = %s", (trans_id,))
+            if not cur.fetchone():
+                cur.execute("UPDATE users SET balance = balance + %s, total_deposit = total_deposit + %s WHERE uid = %s", (amount, amount, uid))
+                cur.execute("INSERT INTO trans_logs (id, uid, amount) VALUES (%s, %s, %s)", (trans_id, uid, amount))
+                db.conn.commit()
+                send_tele_msg(uid, f"✅ **AUTO NẠP THÀNH CÔNG**\n💰 Số dư: `+{amount:,.0f}đ`\n🔥 Chúc bạn chơi game vui vẻ!")
+                send_tele_msg(ADMIN_ID, f"💰 **THÔNG BÁO:** ID `{uid}` vừa nạp `{amount:,.0f}đ` tự động qua MSB.")
+    return jsonify({"status": "ok"}), 200
 
-# --- MASTER BOT ---
-master_bot = TelegramClient('master_bot', API_ID, API_HASH)
-
-# --- MENU CHÍNH ---
-@master_bot.on(events.NewMessage(pattern='/start'))
-async def start_menu(event):
-    if event.sender_id != ADMIN_ID: return
-    text = (
-        "🛡️ **HỆ THỐNG QUẢN LÝ CLONE V8.9**\n\n"
-        "Chào Admin, hãy sử dụng các nút bấm bên dưới để điều khiển:"
-    )
-    buttons = [
-        [Button.inline("➕ Thêm Acc", data="menu_add"), Button.inline("📊 Trạng Thái", data="menu_status")],
-        [Button.inline("🚀 Chạy Spam", data="menu_spam"), Button.inline("🛑 Dừng Spam", data="menu_stop")],
-        [Button.inline("🔄 Cho Acc Join Nhóm", data="menu_join")],
-        [Button.inline("📝 Đổi Tin Nhắn", data="menu_setmsg"), Button.inline("📂 Xem Nhóm", data="menu_list")]
-    ]
-    await event.reply(text, buttons=buttons)
-
-# --- XỬ LÝ NÚT BẤM (CALLBACK) ---
-@master_bot.on(events.CallbackQuery)
-async def callback_handler(event):
-    global is_spamming
-    if event.sender_id != ADMIN_ID: return
-    data = event.data.decode('utf-8')
-
-    if data == "menu_status":
-        sessions = [f for f in os.listdir(SESSION_DIR) if f.endswith('.session')]
-        groups = load_groups()
-        st = "🟢 Đang chạy" if is_spamming else "🔴 Đang dừng"
-        msg = f"📊 STATUS:\n- Trạng thái: {st}\n- Acc Clone: {len(sessions)}\n- Nhóm mục tiêu: {len(groups)}"
-        await event.answer(msg, cache_time=0, alert=True)
-
-    elif data == "menu_spam":
-        if is_spamming: return await event.answer("⚠️ Bot đang chạy rồi!", alert=True)
-        is_spamming = True
-        asyncio.create_task(run_spam_loop())
-        await event.edit("🚀 **Hệ thống đã bắt đầu chiến dịch Spam!**", buttons=[Button.inline("🔙 Quay lại", data="menu_back")])
-
-    elif data == "menu_stop":
-        is_spamming = False
-        await event.edit("🛑 **Đã dừng toàn bộ hoạt động.**", buttons=[Button.inline("🔙 Quay lại", data="menu_back")])
-
-    elif data == "menu_add":
-        await event.answer("Vui lòng gõ lệnh /add để bắt đầu nạp acc.", alert=True)
-
-    elif data == "menu_setmsg":
-        await event.answer("Vui lòng gõ: /setmsg [nội dung] để đổi tin nhắn.", alert=True)
-
-    elif data == "menu_list":
-        gps = load_groups()
-        msg = "📂 DANH SÁCH NHÓM:\n" + ("\n".join(gps) if gps else "Chưa có nhóm nào.")
-        await event.answer(msg, cache_time=0, alert=True)
-
-    elif data == "menu_join":
-        await event.answer("Đang ra lệnh cho dàn clone join nhóm...", alert=False)
-        asyncio.create_task(join_all_groups_logic(event))
-
-    elif data == "menu_back":
-        await start_menu(event)
-
-# --- LOGIC JOIN NHÓM CHO TOÀN BỘ ACC ---
-async def join_all_groups_logic(event):
-    targets = load_groups()
-    session_files = [f for f in os.listdir(SESSION_DIR) if f.endswith('.session')]
-    if not targets or not session_files:
-        await master_bot.send_message(ADMIN_ID, "❌ Không có nhóm hoặc không có acc để join.")
-        return
-    
-    await master_bot.send_message(ADMIN_ID, f"🔄 Đang cho {len(session_files)} acc join {len(targets)} nhóm...")
-    for s in session_files:
-        c = TelegramClient(os.path.join(SESSION_DIR, s), API_ID, API_HASH)
-        try:
-            await c.connect()
-            for t in targets:
-                try:
-                    await c(JoinChannelRequest(t))
-                    await asyncio.sleep(1) # Tránh lụt
-                except: pass
-            await c.disconnect()
-        except: pass
-    await master_bot.send_message(ADMIN_ID, "✅ Đã hoàn thành lệnh Join nhóm cho tất cả acc!")
-
-# --- CÁC LỆNH ĐIỀU KHIỂN ---
-@master_bot.on(events.NewMessage(pattern='/add'))
-async def add_account(event):
-    if event.sender_id != ADMIN_ID: return
-    async with master_bot.conversation(event.chat_id) as conv:
-        try:
-            await conv.send_message("📞 **Nhập số điện thoại (+84...):**\n(Hoặc gõ /cancel để hủy)")
-            phone_res = await conv.get_response()
-            if phone_res.text == '/cancel': return await conv.send_message("❌ Đã hủy.")
-            phone = phone_res.text.strip()
-            
-            client = TelegramClient(os.path.join(SESSION_DIR, f"{phone}.session"), API_ID, API_HASH)
-            await client.connect()
-            
-            if not await client.is_user_authorized():
-                await client.send_code_request(phone)
-                await conv.send_message("📩 **Nhập OTP:**")
-                otp_res = await conv.get_response()
-                try:
-                    await client.sign_in(phone, otp_res.text.strip())
-                except SessionPasswordNeededError:
-                    await conv.send_message("🔒 **Nhập 2FA:**")
-                    pwd_res = await conv.get_response()
-                    await client.sign_in(password=pwd_res.text.strip())
-            
-            await conv.send_message(f"✅ Đã nạp thành công: `{phone}`")
-            await client.disconnect()
-        except Exception as e: await conv.send_message(f"❌ Lỗi: {str(e)}")
-
-@master_bot.on(events.NewMessage(pattern='/setmsg'))
-async def set_msg(event):
-    if event.sender_id != ADMIN_ID: return
-    try:
-        new_msg = event.text.split(' ', 1)[1]
-        with open(MSG_FILE, 'w', encoding='utf-8') as f: f.write(new_msg)
-        await event.reply(f"✅ Đã cập nhật tin nhắn quảng cáo mới!")
-    except: await event.reply("⚠️ HD: `/setmsg [Nội dung]`")
-
-@master_bot.on(events.NewMessage(pattern='/addgroup'))
-async def add_g(event):
-    if event.sender_id != ADMIN_ID: return
-    try:
-        group = event.text.split(' ', 1)[1].strip().replace('@', '')
-        save_group(group); await event.reply(f"✅ Đã thêm nhóm: {group}")
-    except: await event.reply("⚠️ HD: `/addgroup [username]`")
-
-# --- LOGIC SPAM ---
-async def start_reply_handler(client):
-    @client.on(events.NewMessage(incoming=True))
-    async def handler(event):
-        if event.is_private or not is_spamming: return
-        targets = load_groups()
-        chat = await event.get_chat()
-        username = getattr(chat, 'username', '')
-        if username and any(username in g for g in targets):
-            if any(word in (event.text or "").lower() for word in KEYWORDS_REPLY):
-                await asyncio.sleep(random.randint(3, 8))
-                try: await event.reply(f"🤖 {get_ad_msg()}")
-                except: pass
-
-async def run_spam_loop():
-    global is_spamming
-    while is_spamming:
-        targets = load_groups()
-        sessions = [f for f in os.listdir(SESSION_DIR) if f.endswith('.session')]
-        if not targets or not sessions: break
+# ==========================================
+# 🎲 MODULE GAME LOGIC (TÀI XỈU - BẺ CẦU)
+# ==========================================
+def get_game_result():
+    with db.conn.cursor() as cur:
+        # Check ép kết quả
+        cur.execute("SELECT value FROM system_config WHERE key = 'force_result'")
+        force = int(cur.fetchone()[0])
+        if force != -1: return force # 1: Tài, 0: Xỉu
         
-        for target in targets:
-            if not is_spamming: break
-            s_name = random.choice(sessions)
-            if s_name not in clones:
-                c = TelegramClient(os.path.join(SESSION_DIR, s_name), API_ID, API_HASH)
-                try:
-                    await c.connect()
-                    if await c.is_user_authorized():
-                        await start_reply_handler(c)
-                        clones[s_name] = c
-                    else: continue
-                except: continue
-            
-            client = clones.get(s_name)
-            if client:
-                try:
-                    m_key = (s_name, target)
-                    if m_key in last_messages:
-                        try: await client.delete_messages(target, [last_messages[m_key]])
-                        except: pass
-                    sent = await client.send_message(target, get_safe_text())
-                    last_messages[m_key] = sent.id
-                except FloodWaitError as e: await asyncio.sleep(e.seconds)
-                except: pass
-            await asyncio.sleep(random.randint(100, 180)) # Giãn cách để tránh ban
-        await asyncio.sleep(300)
+        # Check tỉ lệ thắng %
+        cur.execute("SELECT value FROM system_config WHERE key = 'win_rate'")
+        rate = cur.fetchone()[0]
+        return 1 if random.randint(1, 100) <= rate else 0
 
-# --- KHỞI CHẠY ---
-async def main():
-    await master_bot.start(bot_token=BOT_TOKEN)
-    print("✅ Bot Online!")
-    await master_bot.run_until_disconnected()
+# ==========================================
+# 🎮 HANDLERS: MENU & CHỨC NĂNG
+# ==========================================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    user = db.get_user(uid)
+    if not user:
+        ref = int(context.args[0]) if context.args and context.args[0].isdigit() else 0
+        with db.conn.cursor() as cur:
+            cur.execute("INSERT INTO users (uid, username, ref_by) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING", 
+                        (uid, update.effective_user.username, ref))
+            db.conn.commit()
+        user = db.get_user(uid)
 
-if __name__ == "__main__":
-    Thread(target=run_web, daemon=True).start()
+    txt = (f"🚀 **TRUMTX - CASINO ĐẲNG CẤP 2026**\n"
+           f"────────────────────\n"
+           f"🆔 ID: `{uid}`\n"
+           f"💰 Số dư: `{user['balance']:,.0f}đ`\n"
+           f"📥 Tổng nạp: `{user['total_deposit']:,.0f}đ`\n"
+           f"🤝 Hoa hồng: `{(user['total_bet']*0.005):,.0f}đ`\n"
+           f"────────────────────\n"
+           f"⚠️ *Điều kiện rút:* Nạp tích lũy đủ **30,000đ**")
+    
+    kb = [
+        [InlineKeyboardButton("🎲 TÀI XỈU", callback_data='game_tx'), InlineKeyboardButton("🎡 VÒNG QUAY", callback_data='wheel')],
+        [InlineKeyboardButton("💵 NẠP TIỀN", callback_data='nap'), InlineKeyboardButton("💸 RÚT TIỀN", callback_data='rut')],
+        [InlineKeyboardButton("🎁 GIFTCODE", callback_data='gift'), InlineKeyboardButton("🎯 NHIỆM VỤ", callback_data='mission')],
+        [InlineKeyboardButton("🤝 ĐẠI LÝ", callback_data='affiliate'), InlineKeyboardButton("📞 HỖ TRỢ", url=SUPPORT_LINK)]
+    ]
+    await update.message.reply_text(txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.MARKDOWN)
+
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    uid = query.from_user.id
+    user = db.get_user(uid)
+    data = query.data
+
+    if data == 'nap':
+        txt = (f"🏦 **NẠP TIỀN TỰ ĐỘNG (MSB)**\n"
+               f"────────────────────\n"
+               f"🏧 Ngân hàng: `{BANK_NAME}`\n"
+               f"🔢 STK: `{BANK_ACC}`\n"
+               f"👤 Chủ TK: `{BANK_USER}`\n"
+               f"📝 Nội dung: `{uid}`\n"
+               f"────────────────────\n"
+               f"⚠️ **Lưu ý:** Chuyển đúng nội dung là ID của bạn để được cộng tiền tự động sau 30 giây!")
+        await query.message.reply_text(txt, parse_mode=ParseMode.MARKDOWN)
+
+    elif data == 'rut':
+        if user['total_deposit'] < MIN_DEPOSIT_RUT:
+            await query.answer(f"❌ Bạn cần nạp đủ {MIN_DEPOSIT_RUT:,.0f}đ để mở khóa rút!", show_alert=True)
+        else:
+            await query.message.reply_text("Để rút tiền, vui lòng gõ: `/rut [Số_tiền] [STK] [Ngân_hàng]`")
+
+    elif data == 'gift':
+        await query.message.reply_text("🎁 Nhập Giftcode bằng cách gõ: `/code [Mã_của_bạn]`")
+
+    elif data == 'mission':
+        # Logic điểm danh đơn giản
+        today = datetime.now().date()
+        with db.conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM checkins WHERE uid = %s AND date = %s", (uid, today))
+            if cur.fetchone():
+                await query.answer("❌ Hôm nay bạn đã điểm danh rồi!", show_alert=True)
+            else:
+                bonus = random.randint(1000, 3000)
+                cur.execute("INSERT INTO checkins VALUES (%s, %s)", (uid, today))
+                cur.execute("UPDATE users SET balance = balance + %s WHERE uid = %s", (bonus, uid))
+                db.conn.commit()
+                await query.answer(f"✅ Điểm danh thành công! +{bonus:,.0f}đ", show_alert=True)
+
+    elif data == 'affiliate':
+        link = f"https://t.me/{context.bot.username}?start={uid}"
+        await query.message.reply_text(f"🤝 **CHƯƠNG TRÌNH ĐẠI LÝ**\nLink của bạn: `{link}`\nNhận 0.5% mỗi khi bạn bè đặt cược!")
+
+# ==========================================
+# 👑 MODULE ADMIN SUPREME PANEL
+# ==========================================
+async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID: return
+    with db.conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*), SUM(balance), SUM(total_deposit) FROM users")
+        s = cur.fetchone()
+        cur.execute("SELECT value FROM system_config WHERE key = 'win_rate'")
+        rate = cur.fetchone()[0]
+    
+    txt = (f"👑 **QUẢN TRỊ VIÊN SUPREME**\n"
+           f"────────────────────\n"
+           f"👥 Tổng khách: `{s[0]}`\n"
+           f"💰 Tiền trong ví khách: `{s[1] or 0:,.0f}đ`\n"
+           f"📥 Doanh thu nạp: `{s[2] or 0:,.0f}đ`\n"
+           f"📈 Tỉ lệ thắng hiện tại: `{rate}%`\n"
+           f"────────────────────\n"
+           f"🛠 **Lệnh điều khiển:**\n"
+           f"1️⃣ Chỉnh % thắng: `/rate [0-100]`\n"
+           f"2️⃣ Ép kết quả: `/force [1 hoặc 0]` (-1 để hủy)\n"
+           f"3️⃣ Set tiền: `/set [ID] [Tiền]`\n"
+           f"4️⃣ Tạo code: `/makecode [Mã] [Tiền] [Lượt]`\n"
+           f"5️⃣ Duyệt rút: `/duyet [ID] [Tiền]`")
+    await update.message.reply_text(txt, parse_mode=ParseMode.MARKDOWN)
+
+async def admin_duyet_rut(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID: return
     try:
-        asyncio.run(main())
-    except:
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(main())
+        target_uid = int(context.args[0])
+        amt = float(context.args[1])
+        # Trừ tiền khách
+        with db.conn.cursor() as cur:
+            cur.execute("UPDATE users SET balance = balance - %s WHERE uid = %s", (amt, target_uid))
+            db.conn.commit()
+        
+        # Báo khách
+        send_tele_msg(target_uid, f"✅ **RÚT TIỀN THÀNH CÔNG**\nSố tiền `{amt:,.0f}đ` đã được Admin chuyển khoản!")
+        
+        # Nổ kênh thông báo
+        masked = str(target_uid)[:4] + "xxxx"
+        msg_channel = (f"🔔 **THÔNG BÁO RÚT TIỀN**\n"
+                       f"👤 Khách hàng: `Người chơi {masked}`\n"
+                       f"💰 Số tiền: `{amt:,.0f} VNĐ`\n"
+                       f"✅ Trạng thái: **Đã thanh toán**\n"
+                       f"🎮 Bot: @{context.bot.username}")
+        await context.bot.send_message(CHANNEL_ID, msg_channel)
+        await update.message.reply_text(f"✅ Đã duyệt rút và nổ kênh cho ID {target_uid}")
+    except: await update.message.reply_text("Cú pháp: `/duyet [ID] [Số_tiền]`")
+
+async def admin_set_rate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID: return
+    rate = float(context.args[0])
+    with db.conn.cursor() as cur:
+        cur.execute("UPDATE system_config SET value = %s WHERE key = 'win_rate'", (rate,))
+        db.conn.commit()
+    await update.message.reply_text(f"✅ Đã chỉnh tỉ lệ thắng về `{rate}%`")
+
+async def admin_force(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID: return
+    val = int(context.args[0])
+    with db.conn.cursor() as cur:
+        cur.execute("UPDATE system_config SET value = %s WHERE key = 'force_result'", (val,))
+        db.conn.commit()
+    status = "TÀI/CHẴN" if val == 1 else "XỈU/LẺ"
+    if val == -1: status = "NGẪU NHIÊN"
+    await update.message.reply_text(f"✅ Đã ép kết quả ván tiếp theo: `{status}`")
+
+# ==========================================
+# 🚀 KHỞI CHẠY (BOT + FLASK)
+# ==========================================
+def run_flask():
+    app_flask.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+
+if __name__ == '__main__':
+    Thread(target=run_flask).start()
+    app = Application.builder().token(TOKEN).build()
+    
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("admin", admin_panel))
+    app.add_handler(CommandHandler("rate", admin_set_rate))
+    app.add_handler(CommandHandler("force", admin_force))
+    app.add_handler(CommandHandler("duyet", admin_duyet_rut))
+    app.add_handler(CallbackQueryHandler(handle_callback))
+    
+    print("🚀 TRUMTX SUPREME IS ONLINE!")
+    app.run_polling()
     
