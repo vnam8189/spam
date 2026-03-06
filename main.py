@@ -169,7 +169,7 @@ class UI:
             layout.append([KeyboardButton("🛠 ADMIN PANEL")])
         return ReplyKeyboardMarkup(layout, resize_keyboard=True)
 
-        @staticmethod
+    @staticmethod
     def admin_panel():
         return InlineKeyboardMarkup([
             [InlineKeyboardButton("📈 BẬT RÚT ẢO", callback_data="adm_mkt_on"), 
@@ -179,6 +179,7 @@ class UI:
             [InlineKeyboardButton("📊 THỐNG KÊ", callback_data="adm_stats"),
              InlineKeyboardButton("🚫 KHÓA USER", callback_data="adm_ban")]
         ])
+
 
         return InlineKeyboardMarkup(layout)
 
