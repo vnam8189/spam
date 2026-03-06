@@ -192,6 +192,8 @@ class Casino_Engine:
         }
 
     def process_taixiu(self, uid, choice, amount, global_wr):
+        # ... (các dòng tiếp theo giữ nguyên nhưng phải thẳng hàng)
+
         """Logic Tài Xỉu có can thiệp Winrate và lưu vết hệ thống"""
         # 1. Kiểm tra số dư & Trừ tiền trước
         user = self.db.query("SELECT balance FROM users WHERE uid = %s", (uid,))[0]
