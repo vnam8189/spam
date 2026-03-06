@@ -191,9 +191,7 @@ class Casino_Engine:
             1: "1️⃣", 2: "2️⃣", 3: "3️⃣", 4: "4️⃣", 5: "5️⃣", 6: "6️⃣",
             "bau": "🎃", "cua": "🦀", "tom": "🦞", "ca": "🐟", "ga": "🐔", "nai": "🦌"
         }
-    # Tuyệt đối KHÔNG để dòng self.db.query(...) nào ở trong hàm __init__ này
-
-
+    # CHỖ NÀY PHẢI TRỐNG - KHÔNG ĐƯỢC CÓ DÒNG NÀO LẤY BALANCE Ở ĐÂY HẾT!
 
         """Logic Tài Xỉu có can thiệp Winrate và lưu vết hệ thống"""
         # 1. Kiểm tra số dư & Trừ tiền trước
