@@ -177,7 +177,7 @@ class UI:
             [InlineKeyboardButton("⚙️ WINRATE", callback_data="adm_wr"),
              InlineKeyboardButton("🎁 TẠO GIFTCODE", callback_data="adm_gen_code")],
             [InlineKeyboardButton("📊 THỐNG KÊ", callback_data="adm_stats"),
-             InlineKeyboardButton("🚫 KHÓA USER", callback_data="adm_ban")]
+             InlineKeyboardButton("🚫 KHÓA USER", callback_data="adm_ban")])
         return InlineKeyboardMarkup(layout)
 
 # =============================================================
