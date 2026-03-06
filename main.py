@@ -178,21 +178,19 @@ class UI:
              InlineKeyboardButton("🎁 TẠO GIFTCODE", callback_data="adm_gen_code")],
             [InlineKeyboardButton("📊 THỐNG KÊ", callback_data="adm_stats"),
              InlineKeyboardButton("🚫 KHÓA USER", callback_data="adm_ban")]
-        ])
-              n()
+    return InlineKeyboardMarkup(layout)
+
+        ]) # Kết thúc cái admin_panel ở trên
+
 # ==============================================================================
 # 🎲 [SECTION 5] CASINO ENGINE CLASS (TÀI XỈU - BẦU CUA - VÒNG QUAY)
 # ==============================================================================
 class Casino_Engine:
     def __init__(self, db_instance):
         self.db = db_instance
-        self.icons = {
-            1: "1️⃣", 2: "2️⃣", 3: "3️⃣", 4: "4️⃣", 5: "5️⃣", 6: "6️⃣",
-            "bau": "🎃", "cua": "🦀", "tom": "🦞", "ca": "🐟", "ga": "🐔", "nai": "🦌"
-        }
+        # ... các dòng tiếp theo thụt vào 1 Tab (4 dấu cách)
 
-    def process_taixiu(self, uid, choice, amount, global_wr):
-        # ... (các dòng tiếp theo giữ nguyên nhưng phải thẳng hàng)
+
 
         """Logic Tài Xỉu có can thiệp Winrate và lưu vết hệ thống"""
         # 1. Kiểm tra số dư & Trừ tiền trước
