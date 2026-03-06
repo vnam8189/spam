@@ -1,2 +1,5 @@
-telethon
+python-telegram-bot==20.8
+psycopg2-binary
 flask
+requests
+gunicorn
