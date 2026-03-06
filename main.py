@@ -187,6 +187,12 @@ class UI:
 class Casino_Engine:
     def __init__(self, db_instance):
         self.db = db_instance
+        self.icons = {
+            1: "1️⃣", 2: "2️⃣", 3: "3️⃣", 4: "4️⃣", 5: "5️⃣", 6: "6️⃣",
+            "bau": "🎃", "cua": "🦀", "tom": "🦞", "ca": "🐟", "ga": "🐔", "nai": "🦌"
+        }
+    # Tuyệt đối KHÔNG để dòng self.db.query(...) nào ở trong hàm __init__ này
+
 
 
         """Logic Tài Xỉu có can thiệp Winrate và lưu vết hệ thống"""
