@@ -8,13 +8,13 @@ from aiogram.filters import Command, CommandObject
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton, WebAppInfo
 
 # --- CẤU HÌNH ---
-TOKEN = "TOKEN_BOT_CUA_BAN"
-ADMIN_ID = 12345678  # ID Telegram của bạn
-REQUIRED_GROUPS = ["@ten_nhom_ban"] # Group bắt buộc
-LOG_GROUP_ID = -100xxxxxxxx # Nhóm thông báo rút tiền thành công
+TOKEN = "8521238450:AAFQCNZVtTifUm8PXLcXRVz2mFgeYdcZZws"
+ADMIN_ID = 7816353760  # ID Telegram của bạn
+REQUIRED_GROUPS = ["@baogametanthunew"] # Group bắt buộc
+LOG_GROUP_ID = -1003778771904 # Nhóm thông báo rút tiền thành công
 MIN_WITHDRAW = 5000
 REF_BONUS = 800
-WEB_APP_URL = "https://your-app-on-render.onrender.com" # Link Render của bạn
+WEB_APP_URL = "https://spam-1-jam2.onrender.com" # Link Render của bạn
 
 app = Flask(__name__)
 bot = Bot(token=TOKEN)
